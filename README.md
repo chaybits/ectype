@@ -28,12 +28,8 @@ Python 3.10+ and no dependencies. The distribution is `ectype-cli`; the command 
 package are both `ectype`. Without the `tokens` extra, token counts are estimated at four
 characters each.
 
-Every release also carries **`ectype.pyz`**, the whole program as a single file. A `.pyz` is
-an ordinary zip archive with an entry point inside it, and Python runs one directly, so
-`python ectype.pyz gui` is all of it: Linux, macOS and Windows alike (`py ectype.pyz gui` there).
-On Unix the file is also marked executable, so `./ectype.pyz gui` works after a `chmod +x`. It
-carries the program, not the interpreter, so Python 3.10+ still has to be installed. This is
-possible only because there are no dependencies to install beside it.
+Every release also carries `ectype.pyz`, the whole program in one file for anyone who would
+rather not install it at all: `python ectype.pyz gui`.
 
 Each agent's store is resolved in one order: **`$ECTYPE_<AGENT>_HOME`** (Codex uses its own
 `$CODEX_HOME`), then the path saved in Settings, then the agent's own default. `ectype agents`
