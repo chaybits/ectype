@@ -1,0 +1,71 @@
+# Publish to PyPI on every GitHub release, over OIDC ("trusted publishing"), so no API token is
+# ever created, stored in a secret, or pasted anywhere.
+#
+# DONE on pypi.org, 2026-09-10, by the account holder:
+#        PyPI Project Name : ectype-cli      <- `ectype` itself is admin-prohibited on PyPI
+#        Owner             : chaybits
+#        Repository name   : ectype
+#        Workflow name     : publish-pypi.yml
+#        Environment name  : (Any)
+# So `pyproject.toml` sets name = "ectype-cli". Only the DISTRIBUTION name changed: the import
+# package is still `ectype`, the command is still `ectype`, and `pip install ectype-cli` gives you
+# both. Cutting a release runs the job below; nothing else to do.
+#
+# Hardening for later: create a GitHub environment named `pypi` with a required reviewer, add
+# `environment: pypi` to the job, and narrow the publisher form's "Environment name" from (Any) to
+# `pypi`. That makes an upload wait for a human click instead of firing on any release.
+name: publish
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  pypi:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write          # the OIDC token trusted publishing exchanges for an upload
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Build sdist and wheel
+        run: |
+          python -m pip install --upgrade build
+          python -m build
+      - name: Check the metadata renders
+        run: |
+          python -m pip install --upgrade twine
+          python -m twine check dist/*
+      # skip-existing keeps a re-cut release from failing on a version PyPI already has, which
+      # is exactly what happens when a release is recreated.
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          skip-existing: true
+
+  # A single file anyone can run with nothing installed but Python: `python ectype.pyz gui`.
+  # Possible only because the package has no dependencies. Built by hand with the same three
+  # lines; `_html_bytes()` reads the UI through importlib.resources so it works inside the zip.
+  zipapp:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write          # to attach the file to the release
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Build ectype.pyz
+        run: |
+          mkdir -p build/src && cp -r ectype build/src/
+          find build/src -name '__pycache__' -type d -exec rm -rf {} +
+          python -m zipapp build/src -o ectype.pyz -p "/usr/bin/env python3" -m "ectype.cli:main" -c
+      - name: Prove it runs
+        run: |
+          python ectype.pyz --help > /dev/null
+          python ectype.pyz agents > /dev/null
+      - name: Attach it to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "${{ github.event.release.tag_name }}" ectype.pyz --clobber

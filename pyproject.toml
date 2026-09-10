@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ectype-cli"
+version = "0.2.1"
+description = "Read, filter, redact, export and resume the on-disk sessions of ten AI coding agents and three chat apps. Command line and a local web UI."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "GPL-3.0-or-later" }
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/chaybits/ectype"
+Source = "https://github.com/chaybits/ectype"
+Changelog = "https://github.com/chaybits/ectype/blob/main/CHANGELOG.md"
+
+[project.optional-dependencies]
+tokens = ["tiktoken>=0.7"]
+
+[project.scripts]
+ectype = "ectype.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["ectype*"]
+
+[tool.setuptools.package-data]
+"ectype.web" = ["index.html"]

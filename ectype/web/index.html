@@ -1,0 +1,719 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>AI Agent Ectype</title>
+<style>
+:root{--bg:#14161a;--panel:#1c1f25;--line:#2b2f37;--fg:#e6e6e6;--dim:#9aa0a8;--acc:#5aa9ff;--ok:#5ec27a;--warn:#e8b34b;--err:#e5655c;
+      --user:#7fd39a;--asst:#8db8ff;--tool:#d8c28a;--env:#f0a35e;--think:#c9a5ff}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.45 system-ui,sans-serif;height:100vh;display:grid;grid-template-columns:var(--sw,360px) 1fr;grid-template-rows:48px 1fr}
+body.hidden-side{--sw:0px}
+body.hidden-side #left{display:none}
+body.dragging{cursor:col-resize;user-select:none}
+header{grid-column:1/3;display:flex;gap:10px;align-items:center;padding:0 14px;border-bottom:1px solid var(--line);background:var(--panel)}
+header h1{font-size:17px;margin:0;font-weight:800;letter-spacing:.02em}header h1 span{color:var(--acc)}header .sub{color:var(--dim);font-size:12px;margin-right:auto;white-space:nowrap}
+#left{grid-column:1;display:grid;grid-template-rows:auto auto 1fr;min-height:0;min-width:0;border-right:1px solid var(--line);position:relative}
+#q{margin:6px 8px 4px;background:var(--bg);border:1px solid var(--line);color:var(--fg);padding:5px 9px;border-radius:6px;width:calc(100% - 16px)}
+#grip{position:absolute;top:0;bottom:0;right:-3px;width:7px;cursor:col-resize;z-index:6}
+#grip:hover,body.dragging #grip{background:var(--acc);opacity:.5}
+#head{display:grid;grid-template-columns:var(--cols);align-items:center;background:var(--panel);border-bottom:1px solid var(--line);font-size:11.5px;color:var(--dim);position:relative;overflow:visible}
+#head .hc{position:relative;padding:5px 8px;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;border-right:1px solid var(--line);user-select:none}
+#head .rz{position:absolute;right:0;top:0;bottom:0;width:7px;cursor:col-resize;z-index:5}#head .rz:hover,#head .rz.on{background:var(--acc);opacity:.6}
+#head .hc:hover{background:#22262d;color:var(--fg)}#head .hc.sorted{color:var(--fg)}#head .hc .ar{font-size:9px;margin-left:3px}
+#head .cfg{position:absolute;right:0;top:0;bottom:0;width:20px;border:0;background:var(--panel);color:var(--dim);cursor:pointer;font-size:12px;padding:0}
+#head .cfg:hover{color:var(--fg)}
+#colmenu{display:none;position:absolute;right:2px;top:100%;z-index:20;background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:6px 10px;box-shadow:0 6px 20px rgba(0,0,0,.5)}
+#colmenu.on{display:block}#colmenu label{display:flex;gap:6px;align-items:center;color:var(--fg);font-size:12px;padding:2px 0;cursor:pointer;white-space:nowrap}
+#colmenu label input:disabled+span{color:var(--dim)}
+#list{overflow:auto}
+.s{display:grid;grid-template-columns:var(--cols);align-items:center;border-bottom:1px solid var(--line);cursor:pointer;font-size:12.5px}
+.s:hover{background:#22262d}.s.sel{background:#243043}
+.s>div{padding:5px 8px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.s .num{text-align:right;font-variant-numeric:tabular-nums;color:var(--dim)}
+.s .dimc{color:var(--dim)}
+.s .idc{cursor:copy}.s .idc .dimc{color:var(--acc);font:12px ui-monospace,Menlo,Consolas,monospace;text-decoration:underline dotted;text-underline-offset:2px}
+.s .idc:hover .dimc{text-decoration-style:solid}.s .idc.copied .dimc{color:var(--ok);text-decoration:none}
+.s.empty{display:block;color:var(--dim);padding:10px 12px}
+.tag{font-size:11px;padding:1px 6px;border-radius:4px;color:var(--fg)}
+main{grid-column:2;display:grid;grid-template-rows:auto auto 1fr;min-height:0}   /* explicit: with #left hidden, auto-placement put main into the 0px column */
+#opts{display:flex;flex-direction:column;gap:6px;padding:8px 14px;border-bottom:1px solid var(--line);background:var(--panel)}
+.row{display:flex;flex-wrap:wrap;gap:14px;align-items:center}
+.row .sep{color:var(--line)}
+#opts label{display:flex;gap:5px;align-items:center;color:var(--dim);cursor:help}
+#opts input[type=number],#opts input[type=text]{width:70px;background:var(--bg);border:1px solid var(--line);color:var(--fg);padding:3px 6px;border-radius:5px}
+#opts select{background:var(--bg);border:1px solid var(--line);color:var(--fg);padding:3px 6px;border-radius:5px;max-width:260px}
+#opts select:disabled{opacity:.45}
+#opts input#terms{width:230px}#opts input#name{width:170px}
+#redpanel{display:none;gap:10px 16px;flex-wrap:wrap;align-items:center;padding:6px 10px;border:1px solid var(--line);border-radius:7px;background:var(--bg)}
+#redpanel.on{display:flex}#redpanel .hd{color:var(--dim);font-size:11px;text-transform:uppercase;letter-spacing:.04em}
+#redpanel label{color:var(--dim);cursor:pointer}
+button{background:var(--acc);border:0;color:#08111f;padding:6px 12px;border-radius:6px;font-weight:600;cursor:pointer}
+button.ghost{background:transparent;border:1px solid var(--line);color:var(--fg);font-weight:500;padding:4px 10px}
+button.link{background:none;border:0;color:var(--acc);padding:0;font-weight:500;text-decoration:underline;cursor:pointer;font-size:12px}
+button.mini{background:transparent;border:1px solid var(--line);color:var(--acc);font-weight:500;padding:1px 7px;font-size:11.5px;border-radius:5px}
+#budget{padding:8px 14px;border-bottom:1px solid var(--line);font-variant-numeric:tabular-nums;display:flex;flex-direction:column;gap:6px}
+.nums{display:flex;gap:22px;flex-wrap:wrap;align-items:baseline}
+.big{display:flex;gap:6px;align-items:baseline;cursor:help}.big .k{color:var(--dim);font-size:12px;text-transform:uppercase;letter-spacing:.04em}.big b{font-size:16px}.big .dim{font-size:12px}
+.barwrap{display:flex;gap:10px;align-items:center}.barwrap .lbl{font-size:12px;color:var(--dim);white-space:nowrap;cursor:help}
+#bar{flex:1;height:10px;background:#2b2f37;border-radius:5px;overflow:hidden;position:relative}#fill{height:100%;background:var(--ok);width:0;transition:width .2s}
+#ghost{position:absolute;top:0;height:100%;width:0;border-right:2px dashed var(--dim);opacity:.6}
+table.parts{border-collapse:collapse;font-size:12.5px}table.parts th,table.parts td{padding:2px 12px 2px 0;text-align:right;white-space:nowrap}
+table.parts th{color:var(--dim);font-weight:500;cursor:help}table.parts td:first-child,table.parts th:first-child{text-align:left}
+table.parts tr.off td{color:var(--dim)}table.parts tr.off td:first-child{color:var(--fg)}table.parts .st{font-size:11px;padding:0 5px;border-radius:4px;background:#2b2f37;color:var(--dim);margin-left:6px}
+table.parts tr.total td{border-top:1px solid var(--line);font-weight:700}table.parts tr.struct td{color:var(--dim)}
+table.parts tr.sub td{color:var(--dim);font-size:11.5px}table.parts tr.sub td:first-child{padding-left:14px;color:var(--dim)}
+table.parts tr.exp{cursor:pointer}table.parts tr.exp td:first-child::before{content:"▸ ";color:var(--dim)}table.parts tr.exp.open td:first-child::before{content:"▾ "}
+#list input.rn{width:100%;box-sizing:border-box;font:inherit;color:var(--fg);background:var(--bg);border:1px solid var(--acc);border-radius:4px;padding:1px 4px}
+#prev{margin:0;padding:14px;overflow:auto;white-space:pre-wrap;font:12.5px/1.5 ui-monospace,Menlo,Consolas,monospace;color:#d8dbe0}
+#prev .h{font-weight:700}#prev .h.user{color:var(--user)}#prev .h.assistant{color:var(--asst)}#prev .h.tool{color:var(--tool)}#prev .h.system{color:var(--env)}
+#prev .b.user{color:#dcefe2}#prev .b.assistant{color:#d8e4f7}#prev .b.tool{color:#cfcabb}#prev .b.system{color:#f3d9c0}
+#prev .call{color:var(--tool)}#prev .res{color:#b9b3a3}#prev .think{color:var(--think)}#prev .note{color:var(--env)}#prev .meta{color:var(--dim)}
+#msg,#redmsg{color:var(--dim);font-size:12px;display:flex;gap:8px;align-items:center;flex-wrap:wrap}#msg.err{color:var(--err)}.dim{color:var(--dim)}
+dialog{background:var(--panel);color:var(--fg);border:1px solid var(--line);border-radius:10px;padding:18px 22px;width:min(980px,94vw);max-height:90vh;overflow:auto}
+dialog::backdrop{background:rgba(0,0,0,.55)}dialog h2{margin:0 0 10px;font-size:16px}dialog h3{margin:16px 0 6px;font-size:13px;color:var(--dim);text-transform:uppercase;letter-spacing:.04em}
+dialog table{border-collapse:collapse;width:100%}dialog td,dialog th{padding:5px 8px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top;font-size:13px}dialog th{color:var(--dim);font-weight:500}
+dialog input[type=text],dialog input[type=number],dialog select,dialog textarea{background:var(--bg);border:1px solid var(--line);color:var(--fg);padding:4px 7px;border-radius:5px}
+dialog input.path{width:100%;font:12px ui-monospace,Menlo,Consolas,monospace}dialog input.path:disabled{opacity:.5}dialog textarea{width:100%;font:12px ui-monospace,Menlo,Consolas,monospace;min-height:64px}
+dialog .actions{display:flex;gap:10px;align-items:center;margin-top:16px}dialog .actions .dim{margin-left:auto;font-size:12px}
+dialog dl{display:grid;grid-template-columns:max-content 1fr;gap:6px 14px;font-size:13px}dialog dt{font-weight:600;white-space:nowrap}dialog dd{margin:0;color:#cfd3d9}
+dialog p.note{font-size:12px;color:var(--dim);margin:4px 0 8px}dialog pre{white-space:pre-wrap;font:12px ui-monospace,Menlo,Consolas,monospace;background:var(--bg);padding:10px;border-radius:6px}
+dialog .grid{display:flex;flex-wrap:wrap;gap:12px 18px;align-items:center}dialog label{display:inline-flex;gap:5px;align-items:center}
+.cat{font-size:11px;padding:1px 6px;border-radius:4px;background:#2b2f37;color:var(--dim)}
+.srcnote{font-size:11px;color:var(--dim)}
+.fate-carried{color:var(--ok)}.fate-folded{color:var(--warn)}.fate-dropped{color:var(--err)}.fate-added{color:var(--acc)}.fate-changed{color:var(--warn)}
+.mono{font:12px ui-monospace,Menlo,Consolas,monospace}
+.banner{border:1px solid var(--line);border-left:3px solid var(--ok);border-radius:6px;padding:6px 10px;font-size:12px;color:var(--dim)}
+</style></head><body>
+<header>
+ <button class="ghost" id="sideBtn" title="show or hide the session list (Ctrl+B)" style="padding:4px 9px">☰</button>
+ <h1><span>E</span>ctype</h1><span class="sub">AI Agent Ectype</span>
+ <button class="ghost" id="helpBtn" title="What every control and number means">? Help</button>
+ <button class="ghost" id="matrixBtn" title="What survives a conversion, for each source and target">⇄ Conversion table</button>
+ <button class="ghost" id="setBtn" title="Agents, store locations, defaults, redaction, export, import notice">⚙ Settings</button>
+</header>
+<div id="left">
+ <input id="q" placeholder="search title / id / project / agent…" title="filters the list below">
+ <div id="head"><div id="colmenu"></div></div>
+ <div id="list"></div>
+ <div id="grip" title="drag to resize the list"></div>
+</div>
+<main>
+ <div id="opts">
+  <div class="row">
+   <label title="How much of every tool call and result to include, and nothing else: thinking is the thinking box's business and is never capped. names only: the tool's name alone, no arguments, no output, no sizes; a failed call is flagged. capped: the first N tokens of each result, N set in Settings → View. everything: every argument and every byte.">tool output <select id="mode"></select></label>
+   <label title="Include the model's reasoning blocks. Off by default: agents never feed their own past thinking back into context, so it is rarely worth the tokens."><input type="checkbox" id="thinking"> thinking</label>
+   <label title="Include what the agent ran (tool calls) and what came back (results). Results are usually the bulk of a session."><input type="checkbox" id="tools" checked> tool calls + results</label>
+   <label title="Messages the harness inserted automatically: system reminders, environment info, IDE selections. You never typed them; the model saw them."><input type="checkbox" id="env"> injected context</label>
+   <label title="How much of a timestamp each message header carries. A full date and time costs 18 tokens per message, the time alone 11, and none at all 5. The session header always says when the session started and ended.">timestamps <select id="stamps"><option value="full">date + time</option><option value="time">time only</option><option value="none">none</option></select></label>
+   <label title="off: one turn per message. same actor: back-to-back turns of the same actor become one turn with one header; a tool result belongs to the assistant turn that called it, so a run of calls costs one header, not one per call. everything into one message: the whole transcript becomes ONE message of that role, in every format: json, jsonl and csv get one record; text prints the session header once, then one turn holding the conversation. Timestamps come off there, since one message cannot carry hundreds. Nothing is dropped.">merge <select id="merge"></select></label>
+   <span class="sep">|</span>
+   <label title="Drop the user's turns, so you can read only what the agent did."><input type="checkbox" id="hideUser"> hide user turns</label>
+   <label title="Drop the assistant's text and thinking. The tool calls it made stay, filed under the tool turn, so you still see which tools ran."><input type="checkbox" id="hideAsst"> hide assistant turns</label>
+   <label title="Keep only messages numbered FROM up to (not including) TO, counting from 0. Leave both empty for all.">messages <input type="number" id="start" placeholder="from" min="0">–<input type="number" id="end" placeholder="to" min="0"></label>
+  </div>
+  <div class="row">
+   <label title="Replace private strings before anything leaves this machine. Switch it on to choose which rules apply."><input type="checkbox" id="redact"> <b>redact</b></label>
+   <div id="redpanel"><span class="hd">rules</span></div>
+   <span id="redmsg"></span>
+  </div>
+  <div class="row">
+   <label title="File name without extension; the format adds it. Ignored for conversions and installs; the target agent decides the file name.">file name <input type="text" id="name" placeholder="agent_id"></label>
+   <label title="How to write it out. The first entry is this agent's own resumable format; the rest are generic.">format <select id="fmt"></select></label>
+   <label title="Write the conversation in a DIFFERENT agent's format so that agent can resume it. Source-only agents are listed but cannot be written.">convert to <select id="convert"></select></label>
+  </div>
+  <div class="row">
+   <label title="Append a final message telling the model this session was imported, so it re-checks paths, date, OS and tools before acting."><input type="checkbox" id="notice"> import notice</label>
+   <button class="mini" id="noticeBtn" title="See the exact wording that will be appended, with this session's values filled in, and change it here">preview…</button>
+   <span id="msg"></span>
+   <span class="sep">|</span>
+   <label title="Where the exported file ends up.">location <select id="dest"></select></label>
+   <label id="wsLbl" title="Which working directory the exported session belongs to. Agents file sessions by directory, so this decides where it turns up when you resume.">workspace <select id="workspace"></select></label>
+   <button id="export" title="Exactly what the preview shows, in the chosen format (or converted)">Export</button>
+  </div>
+  <div class="banner" id="nativeNote" style="display:none"></div>
+ </div>
+ <div id="budget">
+  <div class="nums">
+   <div class="big" title="Everything this transcript can cost: every option on, nothing capped. Content options never move it; layout options (merge, tool headers) apply to both numbers."><span class="k">max context</span><b id="tokAll">–</b></div>
+   <div class="big" title="Exactly what the preview shows, and what an export costs. This is the number the options move."><span class="k">selected</span><b id="tokSel">–</b></div>
+   <span class="dim" id="n"></span>
+  </div>
+  <div class="barwrap"><div id="bar"><div id="fill"></div><div id="ghost"></div></div><span class="lbl" id="barlbl"></span></div>
+  <div id="parts"></div>
+ </div>
+ <pre id="prev" class="dim">Pick a session on the left.</pre>
+</main>
+
+<dialog id="settings">
+ <h2>Settings</h2>
+ <h3>Agents shown in the list</h3>
+ <p class="note">Coding agents are on by default; chat apps are off until you enable them. The store path is where the agent keeps its sessions. Defaults are per operating system (<span id="platName"></span> here): <code>~</code>, <code>%APPDATA%</code> and <code>$VARS</code> are expanded, and the resolved path is shown under each field. An environment variable (<code>$ECTYPE_…_HOME</code>) always wins over a saved path. <b>Resume format</b> is the file an export can be written back as, so that agent can pick the conversation up.</p>
+ <table id="agentsTbl"><thead><tr><th>show</th><th>agent</th><th>type</th><th>resume format</th><th>detected</th><th style="width:36%">store path (empty = default for this OS)</th></tr></thead><tbody></tbody></table>
+
+ <h3>View</h3>
+ <div class="grid">
+  <label><input type="checkbox" id="s_color"> colour roles in the preview</label>
+  <label title="The number the budget bar compares 'selected' against, e.g. the context window of the model you will paste into. Presets fill it in.">reference size <input type="number" id="s_ref" min="1" step="1000" style="width:110px"> tokens <select id="s_refPreset"><option value="">preset…</option><option value="32000">32K</option><option value="128000">128K</option><option value="200000">200K</option><option value="400000">400K</option><option value="1000000">1M</option></select></label>
+  <label title="What the tool-output control starts on for a new session.">default tool output <select id="s_mode"></select></label>
+  <label title="Only the capped tool-output mode uses this. It is here rather than on the toolbar because it is not something you change every session; the command line falls back to it too.">custom cap <input type="number" id="s_cap" min="0" step="50" style="width:80px"> tokens</label>
+  <label><input type="checkbox" id="s_thinking"> thinking on</label>
+  <label><input type="checkbox" id="s_tools"> tool calls + results on</label>
+  <label><input type="checkbox" id="s_env"> injected context on</label>
+  <label title="A tool turn's own '[TOOL] <timestamp>' line costs about 21 tokens to repeat a time the turn above already carries. Off by default; the result simply continues the turn that called it."><input type="checkbox" id="s_toolhdr"> give tool turns their own [TOOL] header</label>
+  <label title="The [USER] / [ASSISTANT] line before each turn, 3 to 5 tokens each. Turning it off makes the export unattributed prose: cheaper, but a model can no longer tell who said what."><input type="checkbox" id="s_markers"> show role markers</label>
+  <label title="What the merge control starts on for a new session.">merge <select id="s_merge"></select></label>
+  <label title="What the timestamps control starts on for a new session.">timestamps <select id="s_stamps"><option value="full">date + time</option><option value="time">time only</option><option value="none">none</option></select></label>
+ </div>
+ <p class="note" style="margin-top:8px">Budget table columns (<b>tokens</b> is always shown):</p>
+ <div class="grid" id="s_cols"></div>
+ <div class="grid" style="margin-top:6px"><label><input type="checkbox" id="s_hideEmpty"> hide rows this session does not have</label></div>
+
+ <h3>Redaction</h3>
+ <p class="note">Defaults for the <b>redact</b> switch on the toolbar; you can override any rule there for a single export. Rules are computed from this machine (nothing is hard-coded). Every match is recorded; click a rule's count to see exactly what it replaced.</p>
+ <div class="grid" id="s_rules"></div>
+ <div class="grid" style="margin-top:6px"><label title="Leave the UTC offset (e.g. +0300) out of the session header, the only place it is printed. The clock is not shifted: a bare timestamp carries no location. UTC output is a separate choice, --utc on the command line."><input type="checkbox" id="s_tz"> hide timezone (leave the offset out)</label></div>
+ <p class="note" style="margin-top:8px">Custom words, one per line: <code>text</code> becomes <code>[REDACTED]</code>, <code>text=Alias</code> becomes <code>Alias</code>:</p>
+ <textarea id="s_terms" placeholder="ProjectX=Project&#10;my-real-name=Author"></textarea>
+
+ <h3>Export</h3>
+ <div class="grid" style="flex-direction:column;align-items:flex-start">
+  <label><input type="radio" name="s_dest" value="download"> <b>download to this browser</b> &nbsp;<span class="dim">(the browser's own save dialog or downloads folder)</span></label>
+  <label><input type="radio" name="s_dest" value="folder"> <b>save into a folder on this machine</b></label>
+  <label style="width:100%">folder <input type="text" id="s_folder" class="path" placeholder=""></label>
+  <label>default format <select id="s_fmt"></select></label>
+ </div>
+
+ <h3>Import notice</h3>
+ <p class="note">A final message appended to exports and conversions that tells the model the session was imported, so it re-checks its environment before acting. Generic = one sentence; detailed = one bullet per item.</p>
+ <div class="grid">
+  <label><input type="checkbox" id="s_nEnabled"> on by default</label>
+  <label><input type="checkbox" id="s_nDetailed"> detailed (bullets)</label>
+ </div>
+ <div class="grid" id="s_nItems" style="margin-top:6px"></div>
+ <pre id="s_nPreview" style="margin-top:8px"></pre>
+
+ <div class="actions"><button id="s_save">Save</button><button class="ghost" id="s_cancel">Cancel</button><span id="s_msg" class="dim"></span><span class="dim" id="s_path"></span></div>
+</dialog>
+
+<dialog id="help">
+ <h2>What the controls and numbers mean</h2>
+ <h3>The two token numbers</h3>
+ <dl>
+  <dt>max context</dt><dd>The whole session with every option on and nothing capped: the most this transcript can cost if you paste all of it somewhere. Content options never move it. Layout options (<em>merge</em> and the tool headers in Settings) apply to both numbers, so that with everything on, <em>selected</em> equals it exactly.</dd>
+  <dt>selected</dt><dd>Exactly what the preview shows, and therefore what an export costs. This is the number the options move.</dd>
+  <dt>the bar</dt><dd>Selected against the <em>reference size</em> from Settings → View, e.g. the context window of the model you will paste into. The dashed mark is where <em>max context</em> would land. Green under 60 %, amber to 90 %, red above.</dd>
+  <dt>the table</dt><dd>Where the selected tokens go, one row per element: your messages, assistant text, thinking, tool calls, tool results, injected context, notices, images, the import notice, and <em>structure</em> (headers and timestamps). An element that the options only partly include gets a second line showing what is left out. The last row is the total, and it equals <em>selected</em> exactly. Which extra columns appear is set in Settings → View.</dd>
+  <dt>counting</dt><dd>Token counts use tiktoken (<code>cl100k_base</code>) when it is installed; otherwise 4 characters ≈ 1 token and the numbers are labelled an estimate.</dd>
+ </dl>
+ <h3>Options</h3>
+ <dl>
+  <dt>tool output: names only / capped / everything</dt><dd>How much of every tool call and result to include, and the biggest lever on the token count.
+   <b>names only</b> keeps the tool's name and nothing else: no arguments, no output, no sizes; a failed call is flagged with <code>↳ error</code>. The model knows the call happened and can ask again; you pay four tokens instead of thousands. Arguments matter here: one Bash command or file patch runs to hundreds of characters, so dropping them is most of the saving.
+   <b>capped</b> keeps the first N tokens of each result, N being the <em>custom cap</em> in Settings → View, and says how many were cut. A block barely over the limit is left alone, because the "cut" note would cost more than it saves.
+   <b>everything</b> includes every argument and every byte. The mode touches nothing but the tool calls and results: thinking is on or off, and is never capped.</dd>
+  <dt>thinking</dt><dd>The model's reasoning blocks. Agents never feed their own past thinking back into context, so it is off by default. Some agents encrypt it (Codex); only a summary is available.</dd>
+  <dt>tool calls + results</dt><dd>What the agent ran and what came back. Where a result was too large for the transcript, the agent spilled it to a file next to the session; those are read back in, so you see the real output rather than a preview.</dd>
+  <dt>injected context</dt><dd>Messages the harness inserted automatically: system reminders, environment details, IDE selections, wrappers around your prompt. You never typed them; the model saw them. Off by default because they are noise to a human reader.</dd>
+  <dt>hide user / assistant turns</dt><dd>Drops that side's text and, for the assistant, its thinking. The tool calls a hidden assistant turn made are kept and filed under the tool turn, so a view with both sides hidden still lists which tools ran, under a <code>[TOOL]</code> header (a transcript always has at least one actor). Useful for reading only one side, and for seeing what the rest of the session costs on its own.</dd>
+  <dt>timestamps</dt><dd>How much of a time each message header carries. Measured on this tokenizer, <code>[ASSISTANT] 2026-04-18 02:08:51</code> is 18 tokens, <code>[ASSISTANT] 02:08:51</code> is 11 and <code>[ASSISTANT]</code> alone is 5, so on a long session this is worth thousands. The session header always states when the session started and ended, so nothing is lost by setting this to <em>none</em>; the ordering of the turns still carries the sequence.</dd>
+  <dt>merge</dt><dd><b>off</b> prints one turn per message. <b>same actor, back to back</b> joins consecutive turns of the same actor into one turn with one header; in Claude Code every tool call is its own assistant message, so a run of twenty calls used to be twenty <code>[ASSISTANT] …</code> headers at up to 18 tokens each; that, not the tool names, was why <em>names only</em> still cost twice the conversation. A tool result belongs to the assistant turn that called it and merges into it. <b>everything into one user / system / assistant message</b> makes the whole transcript ONE message of that role, in every format: json, jsonl and csv get a single record holding the conversation; text, markdown and html print the session header once and then one turn holding the conversation, its inner turns kept as lines. Timestamps come off there, because one message cannot carry hundreds. Nothing is dropped in any mode. An agent's own resumable file is never merged; it is copied record for record. The default is in Settings → View.</dd>
+  <dt>where the tokens really go</dt><dd>A tool result is printed under the turn that called it, with no header of its own. A <code>[TOOL] 2026-09-05 21:26:08 +0300</code> line costs 21 tokens, and on a session with a few hundred tool turns that was most of the export: on one measured view, 4,734 of 7,759 tokens were those header lines. Settings → View can switch them back on. For the same reason the UTC offset is printed once in the session header instead of on every line, and a model name is printed only when it changes.</dd>
+  <dt>messages from–to</dt><dd>Keep only messages numbered <em>from</em> up to (not including) <em>to</em>, counting from 0 in the full session. Leave both empty for all.</dd>
+  <dt>redact</dt><dd>Switch it on and the rules appear next to it, with what they replaced on the same line: home directory, removable-media path, username, hostname, e-mail addresses, API-key-shaped strings, IP addresses, and the timezone. Replacements are placeholders such as <code>/home/user</code>, <code>user</code>, <code>host</code>, <code>user@example.com</code>, <code>[REDACTED_KEY]</code>, <code>[IP]</code>. Click the summary to see every value that was replaced. <em>custom words</em> takes one-off literals (<code>secret</code> or <code>Name=Alias</code>); the persistent list lives in Settings.</dd>
+  <dt>timezone, and why it behaves differently</dt><dd>Every other rule replaces text. Timestamps are not text in the transcript (they are dates, formatted when the export is written), so no search-and-replace can reach them, and adding <code>+0300</code> as a custom word matches nothing at all. Ticking <em>timezone</em> stops the offset being printed: the only place it appeared was the session header's <em>started</em> and <em>ended</em> line, and it is simply left out. The clock is <b>not</b> shifted. A bare timestamp carries no location (a reader has no basis to call it UTC rather than local), so converting to UTC moved every time by three hours without hiding anything the missing offset had not already hidden. If you actually want UTC, that is <code>--utc</code> on the command line, which is a separate and explicit choice.</dd>
+ </dl>
+ <h3>Export</h3>
+ <dl>
+  <dt>format</dt><dd>The first entry is <b>this agent's own format</b>: the file it wrote itself, so it can be resumed. Then the generic ones: <em>text</em> (the preview), <em>markdown</em> (a heading per turn), <em>html</em> (one standalone page), <em>json</em> / <em>jsonl</em> (the canonical model, one message per line for jsonl), <em>csv</em> (one row per message, for a spreadsheet).</dd>
+  <dt>convert to</dt><dd>Write the conversation in a <em>different</em> agent's format. That one is lossy, because no agent has a place for another's tool records or reasoning: your messages and the assistant's text carry, tool activity folds into short notes, thinking and injected context are dropped. Exporting to the agent it came from is not a conversion at all: the file already is that format, so it is copied and nothing is lost. The <button class="link" id="h_matrix">conversion table</button> shows the fate of every element for the pair you pick. The <em>format</em> menu stays open while a target is chosen: pick <em>text</em> or any other generic format to get the conversation folded exactly as the conversion folds it, written as that format, for feeding to the agent yourself instead of installing its file.</dd>
+  <dt>why only some targets</dt><dd>A target has to be <em>written</em> and proven to resume. Claude Code, Codex CLI and Gemini CLI keep their history in a plain file whose shape has been verified by installing a converted session and resuming it. The others are readable but not writable: Antigravity, Cursor and Copilot Chat keep resumable state in SQLite or protobuf blobs an outside tool cannot safely forge, and the chat apps have no resume at all. They are listed in the menu, greyed out, with the reason.</dd>
+  <dt>location</dt><dd>Where the file ends up. <em>download to this browser</em> hands it to the browser. <em>save into a folder on this machine</em> writes it into the export folder from Settings. <em>put it in the agent's store, ready to resume</em> writes it into the agent's own session store, so it is waiting there the next time you resume.</dd>
+  <dt>workspace</dt><dd>The working directory the copy belongs to. Agents file sessions by directory, so this decides where the session turns up. It only does anything when the location is the agent's own store, and is greyed out otherwise. <em>the folder it came from</em> leaves it where the original was recorded.</dd>
+  <dt>import notice</dt><dd>Appends a final message telling the model the session was imported, so it re-checks paths, date and time, operating system and tools before acting. <em>preview…</em> shows the exact wording with this session's values, and lets you change what it says with the result updating as you click.</dd>
+ </dl>
+ <h3>Session list</h3>
+ <dl>
+  <dt>columns</dt><dd>The header row sorts: click a column to sort by it, click again to reverse. Drag the right edge of a column header to resize that column; double-click the edge to give it its share back. The <code>⋮</code> button at its right chooses which columns are shown. Name is always there. Both choices are remembered. The columns share the panel's width and long cells are cut with an ellipsis; drag the panel wider to see more. Clicking an <em>id</em> copies the full id to the clipboard (the cell shows its first 8 characters); it does not open the session; click the name for that.</dd>
+  <dt>the panel itself</dt><dd>Drag its right edge to resize it, and use <code>☰</code> in the top left, or <kbd>Ctrl</kbd>+<kbd>B</kbd>, to hide it entirely when you want the whole window for the transcript; the search box sits above the list and hides with it. The width and the hidden state are remembered by this browser.</dd>
+  <dt>which agents appear at all</dt><dd>Settings → Agents. That is a different question from which columns you are looking at.</dd>
+  <dt>size</dt><dd>The size of the file on disk. It also holds the JSON envelope, per-turn usage records and any images, so it is normally several times larger than the transcript inside it.</dd>
+  <dt>project / cwd</dt><dd>Shown when the agent recorded them. Antigravity records a working directory only for conversations opened in a workspace; headless <code>agy -p</code> runs have none.</dd>
+  <dt>files beside a session</dt><dd>A transcript is often not the whole session. Claude Code keeps a folder of the session's own id next to it: <code>tool-results/</code> holds the full text of results too large to inline (read back in here, so you see the real output rather than the 2 KB preview, and copied along by a native export), <code>subagents/</code> holds Task-tool runs as separate conversations, and <code>custom-title.json</code> holds the title you typed. Gemini CLI spills the same way into <code>tool-outputs/</code>.</dd>
+ </dl>
+ <div class="actions"><button class="ghost" id="h_close">Close</button></div>
+</dialog>
+
+<dialog id="matches">
+ <h2>Redaction: what was replaced</h2>
+ <p class="note" id="m_sum"></p>
+ <div id="m_body"></div>
+ <div class="actions"><button class="ghost" id="m_close">Close</button></div>
+</dialog>
+
+<dialog id="matrix">
+ <h2>Conversion table: what carries over</h2>
+ <div class="grid"><label>from <select id="x_src"></select></label><label>to <select id="x_dst"></select></label></div>
+ <p class="note" id="x_sum" style="margin-top:10px"></p>
+ <div id="x_body"></div>
+ <p class="note" id="x_disc"></p>
+ <div class="actions"><button class="ghost" id="x_close">Close</button></div>
+</dialog>
+
+<dialog id="convwarn">
+ <h2>Before your first conversion</h2>
+ <p>Converting to a <b>different</b> agent rewrites the conversation in that agent's own format so it can resume it. It is <b>lossy by design</b>: your messages and the assistant's text are carried verbatim; tool calls and results become short bracketed notes; thinking, injected context and notices are dropped; images are not carried. Every conversion comes with a fidelity report that counts exactly what was kept, folded and dropped.</p>
+ <p>Exporting to the agent the session came from is not affected; that is a copy, and nothing is lost.</p>
+ <p>Check the <button class="link" id="w_matrix">conversion table</button> for the fate of each element and the verified agent versions. Agent formats are undocumented internals and can change with any release.</p>
+ <div class="actions"><button id="w_ok">OK, don't show again</button><button class="ghost" id="w_cancel">Cancel</button></div>
+</dialog>
+
+<dialog id="report">
+ <h2>Export report</h2>
+ <p class="note" id="r_where"></p>
+ <pre id="r_body"></pre>
+ <div class="actions"><button class="ghost" id="r_close">Close</button></div>
+</dialog>
+
+<dialog id="noticedlg">
+ <h2>Import notice: exactly what gets appended</h2>
+ <p class="note" id="nd_note"></p>
+ <div class="grid">
+  <label title="One sentence, or one bullet per item below."><input type="checkbox" id="nd_detailed"> detailed (one bullet per item)</label>
+ </div>
+ <div class="grid" id="nd_items" style="margin-top:6px"></div>
+ <pre id="nd_body" style="margin-top:10px"></pre>
+ <div class="actions"><button id="nd_save">Save</button><button class="ghost" id="nd_close">Close</button><span class="dim" id="nd_msg"></span></div>
+</dialog>
+
+<script>
+const $=s=>document.querySelector(s);const $$=s=>[...document.querySelectorAll(s)];
+let refs=[],cur=null,timer=null,SET=null,CAT=null,MATRIX=null,lastText='',lastRedaction=null,AGENTS={},expanded=new Set(),fmtOwner=null;
+const esc=s=>String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const local=iso=>{const d=new Date(iso);return d.toLocaleDateString(undefined,{year:'2-digit',month:'2-digit',day:'2-digit'})+' '+d.toLocaleTimeString(undefined,{hour:'2-digit',minute:'2-digit',hour12:false})};
+const fmtN=n=>(n==null?'–':Number(n).toLocaleString());
+const fmtSize=b=>b<1024?b+' B':b<1048576?(b/1024).toFixed(0)+' KB':(b/1048576).toFixed(1)+' MB';
+const hue=s=>{let h=0;for(const c of s)h=(h*31+c.charCodeAt(0))>>>0;return h%360};
+const tagStyle=a=>`background:hsl(${hue(a)} 35% 28%)`;
+function msg(html,err){$('#msg').innerHTML=html||'';$('#msg').className=err?'err':''}
+
+// ---------------------------------------------------------------- boot
+async function loadSettings(){const r=await (await fetch('/api/settings')).json();SET=r.settings;CAT=r;SET._path=r.path;SET._exportDir=r.export_dir;
+ if(r.load_error)msg('settings file ignored, defaults in effect: '+esc(r.load_error)+'; Save keeps it as .bad-… and writes a fresh one',true);
+ AGENTS={};for(const a of r.agents)AGENTS[a.name]=a;
+ const MODENAME={brief:'names only',custom:'capped',full:'everything'};
+ // one control for both merge settings: `collapse` (same actor) and `wrap` (everything into one message of a role)
+ const MERGE_OPTS='<option value="off">off: one turn per message</option><option value="actor">same actor, back to back</option><option value="all:user">everything into one user message</option><option value="all:system">everything into one system message</option><option value="all:assistant">everything into one assistant message</option>';
+ window.mergeOf=v=>v.wrap?'all:'+v.wrap:(v.collapse!==false?'actor':'off');
+ window.mergeParts=m=>({collapse:m!=='off',wrap:m.startsWith('all:')?m.slice(4):''});
+ window.MERGE_OPTS=MERGE_OPTS;
+ $('#mode').innerHTML=r.modes.map(m=>`<option value="${m.key}" title="${esc(m.label)}">${MODENAME[m.key]||m.key}</option>`).join('');$('#mode').value=SET.view.mode;
+ $('#dest').innerHTML=`<option value="download" title="hand the file to the browser, which saves it where downloads go">download to this browser</option>`
+  +`<option value="folder" title="write it into the export folder set in Settings → Export">save into a folder on this machine</option>`
+  +`<option value="install" title="write it into the agent's own session store, so it is waiting there the next time you resume">put it in the agent's store, ready to resume</option>`;
+ $('#dest').value=SET.export.mode;
+ drawConvert();
+ $('#thinking').checked=SET.view.thinking;$('#tools').checked=SET.view.tools;$('#env').checked=SET.view.env;
+ $('#stamps').value=SET.view.stamps;$('#merge').innerHTML=MERGE_OPTS;$('#merge').value=mergeOf(SET.view);
+ $('#notice').checked=SET.notice.enabled;
+ $('#redpanel').innerHTML='<span class="hd">rules</span>'+r.rules.map(x=>`<label title="replaced with a placeholder"><input type="checkbox" class="rrule" value="${x.name}" ${SET.redact[x.name]?'checked':''}> ${esc(x.label)}</label>`).join('')
+  +`<label title="Leave the UTC offset out of the session header; the clock is not shifted."><input type="checkbox" class="rrule" value="timezone" ${SET.redact.timezone?'checked':''}> timezone</label>`
+  +`<span class="hd">custom words</span><input type="text" id="terms" placeholder="secret, Name=Alias" title="Comma-separated extra literals to redact for this export. \`text\` becomes [REDACTED]; \`text=Alias\` becomes Alias. The persistent list is in Settings.">`;
+ $('#terms').oninput=sched;$$('#redpanel .rrule').forEach(i=>i.onchange=rerender);
+ drawFormats();drawHead()}
+async function loadSessions(){refs=await (await fetch('/api/sessions')).json();draw()}
+async function boot(){await loadSettings();await loadSessions()}
+
+// ---------------------------------------------------------------- session list (file-manager style)
+// One column per field, a clickable header that sorts, and a menu to turn columns on and off,
+// the same shape as Dolphin's or Explorer's list view. Choices persist in Settings.
+// Every track is `minmax(0, Nfr)`: the columns share the panel's width and long cells ellipsize.
+// Pixel minimums summed to 550px with all six on, and the grid overflowed into the transcript.
+const LISTCOL={name:{label:'Name',w:'minmax(0,3fr)',cls:'nm',get:r=>r.title||'(untitled)',cmp:r=>(r.title||'').toLowerCase()},
+ agent:{label:'Agent',w:'minmax(0,1fr)',get:r=>`<span class="tag" style="${tagStyle(r.agent)}">${r.agent}</span>`,cmp:r=>r.agent},
+ id:{label:'Id',w:'minmax(0,1fr)',cls:'idc',get:r=>`<span class="dimc">${r.short}</span>`,cmp:r=>r.id},
+ modified:{label:'Modified',w:'minmax(0,1.5fr)',get:r=>`<span class="dimc">${local(r.mtime)}</span>`,cmp:r=>r.mtime},
+ size:{label:'Size',w:'minmax(0,.8fr)',cls:'num',get:r=>fmtSize(r.size),cmp:r=>r.size,title:'the size of the file on disk, envelope and images included'},
+ project:{label:'Project',w:'minmax(0,1.3fr)',get:r=>`<span class="dimc">${esc(r.project||'')}</span>`,cmp:r=>(r.project||'').toLowerCase()}};
+function listCols(){return (SET.view.list.columns||['name']).filter(c=>LISTCOL[c])}
+// Dragged column widths are browser geometry, like the sidebar width, so they live in localStorage
+// as pixels; a column never dragged keeps its share (`minmax(0, Nfr)`). Double-click a handle resets it.
+const WIDTHS={get all(){try{return JSON.parse(localStorage.getItem('ectype.list.widths')||'{}')}catch(e){return {}}},
+              set all(v){localStorage.setItem('ectype.list.widths',JSON.stringify(v))}};
+function gridCss(){const w=WIDTHS.all;return listCols().map(c=>w[c]?`${w[c]}px`:LISTCOL[c].w).join(' ')}
+function applyCols(){$('#left').style.setProperty('--cols',gridCss())}
+function bindResize(){$$('#head .rz').forEach(h=>{
+ h.onclick=e=>e.stopPropagation();
+ h.ondblclick=e=>{e.stopPropagation();const w=WIDTHS.all;delete w[h.dataset.c];WIDTHS.all=w;applyCols()};
+ h.onmousedown=e=>{e.preventDefault();e.stopPropagation();const c=h.dataset.c,cell=h.parentElement,x0=e.clientX,w0=cell.getBoundingClientRect().width;
+  // the other columns keep at least their dragged width or 40px, so the row can never outgrow the panel
+  const saved=WIDTHS.all,others=listCols().filter(x=>x!==c).reduce((a,x)=>a+(saved[x]||40),0);
+  const max=Math.max(40,$('#head').getBoundingClientRect().width-others-22);
+  h.classList.add('on');document.body.classList.add('dragging');
+  const move=ev=>{const all=WIDTHS.all;all[c]=Math.round(Math.max(40,Math.min(w0+ev.clientX-x0,max)));WIDTHS.all=all;applyCols()};
+  const up=()=>{h.classList.remove('on');document.body.classList.remove('dragging');document.removeEventListener('mousemove',move);document.removeEventListener('mouseup',up)};
+  document.addEventListener('mousemove',move);document.addEventListener('mouseup',up)}})}
+function drawHead(){const cols=listCols(),s=SET.view.list.sort,desc=SET.view.list.desc;
+ const menu=$('#colmenu');                       // survives the innerHTML swap below
+ applyCols();
+ $('#head').innerHTML=cols.map(c=>`<div class="hc${s===c?' sorted':''}" data-c="${c}" title="${esc(LISTCOL[c].title||'sort by '+LISTCOL[c].label.toLowerCase())}">${LISTCOL[c].label}${s===c?`<span class="ar">${desc?'▼':'▲'}</span>`:''}<span class="rz" data-c="${c}" title="drag to resize this column; double-click to reset"></span></div>`).join('')
+  +`<button class="cfg" id="colBtn" title="which columns to show">⋮</button>`;
+ $('#head').appendChild(menu);
+ $$('#head .hc').forEach(h=>h.onclick=()=>{const c=h.dataset.c;
+  if(SET.view.list.sort===c)SET.view.list.desc=!SET.view.list.desc;else{SET.view.list.sort=c;SET.view.list.desc=c==='modified'||c==='size'}
+  saveView();drawHead();draw()});
+ bindResize();
+ $('#colBtn').onclick=e=>{e.stopPropagation();drawColMenu();$('#colmenu').classList.toggle('on')}}
+function drawColMenu(){$('#colmenu').innerHTML=(CAT.list_columns||[]).map(c=>`<label><input type="checkbox" class="lc" value="${c}" ${listCols().includes(c)?'checked':''} ${c==='name'?'disabled':''}><span>${LISTCOL[c].label}</span></label>`).join('');
+ $$('#colmenu .lc').forEach(i=>i.onchange=()=>{SET.view.list.columns=(CAT.list_columns||[]).filter(c=>c==='name'||$$('#colmenu .lc').find(x=>x.value===c).checked);
+  if(!listCols().includes(SET.view.list.sort))SET.view.list.sort='modified';
+  saveView();drawHead();draw()})}
+document.addEventListener('click',()=>$('#colmenu').classList.remove('on'));
+$('#colmenu').addEventListener('click',e=>e.stopPropagation());
+
+// ---------------------------------------------------------------- sidebar: collapse + resize
+// Geometry is browser state, not tool configuration, so it lives in localStorage rather than in
+// the settings file that gets shared between machines.
+const SIDE={get w(){return localStorage.getItem('ectype.sidebar.w')||'360'},
+            set w(v){localStorage.setItem('ectype.sidebar.w',v)},
+            get off(){return localStorage.getItem('ectype.sidebar.off')==='1'},
+            set off(v){localStorage.setItem('ectype.sidebar.off',v?'1':'0')}};
+function applySide(){document.body.classList.toggle('hidden-side',SIDE.off);
+ // the inline value wins over the class, so collapsing has to zero it here too
+ document.body.style.setProperty('--sw',SIDE.off?'0px':SIDE.w+'px')}
+$('#sideBtn').onclick=()=>{SIDE.off=!SIDE.off;applySide()};
+document.addEventListener('keydown',e=>{if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==='b'&&!/^(INPUT|TEXTAREA)$/.test(document.activeElement.tagName)){e.preventDefault();SIDE.off=!SIDE.off;applySide()}});
+$('#grip').addEventListener('mousedown',e=>{e.preventDefault();document.body.classList.add('dragging');
+ const move=ev=>{const w=Math.min(Math.max(ev.clientX,180),Math.round(window.innerWidth*0.8));
+  SIDE.w=String(w);document.body.style.setProperty('--sw',w+'px')};
+ const up=()=>{document.body.classList.remove('dragging');document.removeEventListener('mousemove',move);document.removeEventListener('mouseup',up)};
+ document.addEventListener('mousemove',move);document.addEventListener('mouseup',up)});
+applySide();
+async function saveView(){const s=JSON.parse(JSON.stringify(SET));delete s._path;delete s._exportDir;
+ await fetch('/api/settings',{method:'POST',body:JSON.stringify({settings:s})})}
+function draw(){const q=$('#q').value.toLowerCase(),cols=listCols();
+ const rows=refs.filter(r=>!q||(r.title||'').toLowerCase().includes(q)||r.id.includes(q)||(r.project||'').toLowerCase().includes(q)||r.agent.includes(q));
+ const key=LISTCOL[SET.view.list.sort]?LISTCOL[SET.view.list.sort].cmp:LISTCOL.modified.cmp;
+ rows.sort((a,b)=>{const x=key(a),y=key(b);return (x<y?-1:x>y?1:0)*(SET.view.list.desc?-1:1)});
+ $('#list').innerHTML=rows.map(r=>`<div class="s${cur&&cur.id===r.id&&cur.agent===r.agent&&cur.path===r.path?' sel':''}" data-a="${r.agent}" data-id="${r.id}" data-p="${esc(r.path)}">`
+  +cols.map(c=>`<div class="${LISTCOL[c].cls||''}"${c==='name'?` title="${esc(r.title||'')}${r.title?' · ':''}double-click to rename"`:c==='id'?' title="click to copy the full id"':''}>${c==='name'?esc(LISTCOL[c].get(r)):LISTCOL[c].get(r)}</div>`).join('')+'</div>').join('')
+  ||'<div class="s empty">nothing here: enable agents in Settings, or check their store paths</div>';
+ $$('.s[data-id]').forEach(el=>el.onclick=ev=>{const idc=ev.target.closest('.idc');if(idc){copyId(el.dataset.id,idc);return}// the path too: one id can exist under two project folders
+  cur={agent:el.dataset.a,id:el.dataset.id,path:el.dataset.p};
+  $$('.s.sel').forEach(x=>x.classList.remove('sel'));el.classList.add('sel');
+  $('#name').placeholder=`${cur.agent}_${cur.id.slice(0,8)}`;expanded.clear();drawConvert();drawFormats();drawWorkspaces();rerender()});
+ $$('.s[data-id] .nm').forEach(el=>el.ondblclick=ev=>{ev.stopPropagation();startRename(el)})}
+
+// Rename in place. Two tiers, and the status line says which one took it: Claude Code gets the
+// name written into its own store (the custom-title.json it writes itself), every other agent
+// keeps it on ectype's side, because guessing a title field inside another program's database is
+// exactly what the disclaimer promises not to do. An empty name restores the generated one.
+function startRename(cell){
+ const row=cell.closest('.s');if(!row||cell.querySelector('input.rn'))return;
+ const was=cell.textContent,inp=document.createElement('input');
+ inp.className='rn';inp.value=was==='(untitled)'?'':was;
+ inp.title='Enter to save, Escape to cancel, empty to restore the generated name';
+ cell.textContent='';cell.appendChild(inp);inp.focus();inp.select();
+ let done=false;
+ const cancel=()=>{if(done)return;done=true;cell.textContent=was};
+ inp.onclick=e=>e.stopPropagation();
+ inp.onblur=cancel;
+ inp.onkeydown=async e=>{
+  e.stopPropagation();
+  if(e.key==='Escape'){cancel();return}
+  if(e.key!=='Enter')return;
+  done=true;
+  const body={agent:row.dataset.a,id:row.dataset.id,path:row.dataset.p,title:inp.value.trim()};
+  let r;
+  try{r=await (await fetch('/api/rename',{method:'POST',body:JSON.stringify(body)})).json()}
+  catch(err){msg(String(err),true);cell.textContent=was;return}
+  if(r.error){msg(esc(r.error),true);cell.textContent=was;return}
+  const ref=refs.find(x=>x.agent===body.agent&&x.id===body.id&&x.path===body.path);
+  if(ref)ref.title=body.title||r.generated||'';
+  msg(r.where==='native'?'renamed in the agent\'s own store':'renamed (kept by ectype: this agent has no title of its own)');
+  draw();
+  if(cur&&cur.agent===body.agent&&cur.id===body.id)rerender()}}
+
+// Clicking the id cell copies the FULL id (the cell shows its first 8 characters). It does not open the
+// session: a copy should not start a render. The synchronous execCommand runs INSIDE the click, where
+// every browser allows it without a permission; the async clipboard API is tried as well.
+function copyId(id,cell){let ok=false,flashed=false;
+ const flash=()=>{if(flashed)return;flashed=true;const was=cell.innerHTML;cell.classList.add('copied');cell.innerHTML='<span class="dimc">copied ✓</span>';msg(`copied ${esc(id)}`);
+  setTimeout(()=>{cell.innerHTML=was;cell.classList.remove('copied')},1500)};
+ const ta=document.createElement('textarea');ta.value=id;ta.setAttribute('readonly','');ta.style.position='fixed';ta.style.top='0';ta.style.opacity='0';
+ document.body.appendChild(ta);ta.select();ta.setSelectionRange(0,id.length);
+ try{ok=document.execCommand('copy')}catch(e){}
+ ta.remove();
+ if(navigator.clipboard&&navigator.clipboard.writeText)navigator.clipboard.writeText(id).then(flash,()=>{});
+ if(ok)flash();else if(!(navigator.clipboard&&navigator.clipboard.writeText))msg('could not copy: select the id and press Ctrl+C',true)}
+
+// ---------------------------------------------------------------- format / workspace / destination
+function agentOf(){return cur?AGENTS[cur.agent]:null}
+function drawConvert(){const keep=$('#convert').value;
+ // The session's OWN agent is not a conversion target, since that is the format menu's first entry,
+ // and offering it twice invites picking the lossy path to reach a lossless result.
+ $('#convert').innerHTML='<option value="">none (plain export)</option>'+(CAT.agents||[]).filter(a=>!cur||a.name!==cur.agent)
+  .map(a=>a.writable?`<option value="${a.name}">${esc(a.label)}</option>`
+                    :`<option value="${a.name}" disabled>${esc(a.label)} (source only)</option>`).join('');
+ if(keep&&[...$('#convert').options].some(o=>o.value===keep&&!o.disabled))$('#convert').value=keep}
+function targetAgent(){return $('#convert').value||(cur&&$('#fmt').value==='native'?cur.agent:'')}
+function drawFormats(){const a=agentOf(),conv=$('#convert').value;const tgt=conv?AGENTS[conv]:a;
+ const generic=CAT.formats.map(f=>`<option value="${f}">${f}</option>`).join('');
+ // A source-only agent gets a disabled first entry rather than none, so the menu says WHY there
+ // is no resumable format for it instead of just looking different from Claude Code's.
+ const canNative=!!(tgt&&tgt.writable);
+ const nat=canNative?`<option value="native">${esc(tgt.native_format)} (resumable)</option>`
+   :(tgt?`<option value="" disabled>${esc(tgt.label)} has no resumable format (source only)</option>`:'');
+ // A pick only survives while it is about the same agent: choose another session or another
+ // target and the format goes back to what that agent expects.
+ const owner=(conv||(cur?cur.agent:''))+'';const keep=fmtOwner===owner?$('#fmt').value:'';fmtOwner=owner;
+ $('#fmt').innerHTML=nat+generic;
+ $('#fmt').disabled=false;
+ if(conv){
+  // Converting: the target's own format is the default, but the menu stays open. "My Claude
+  // session as Codex, but as plain text" is a real request: the fold happens, the envelope does not.
+  const want=keep&&[...$('#fmt').options].some(o=>o.value===keep&&!o.disabled)?keep:'native';
+  $('#fmt').value=want}
+ else{
+  // `nat` may be a DISABLED placeholder for a source-only agent, so ask `canNative`, not the html
+  const fallback=canNative?'native':(SET.export.format==='native'?'text':SET.export.format);
+  const want=keep&&[...$('#fmt').options].some(o=>o.value===keep&&!o.disabled)?keep:fallback;
+  $('#fmt').value=want}
+ const native=$('#fmt').value==='native'&&!conv;
+ $('#dest').options[2].disabled=!(tgt&&tgt.writable&&$('#fmt').value==='native');
+ if($('#dest').selectedIndex===2&&$('#dest').options[2].disabled)$('#dest').value=SET.export.mode;
+ const nn=$('#nativeNote');
+ if(native){nn.style.display='';nn.innerHTML=`<b>${esc(a.label)} → ${esc(a.label)}</b> is a copy, not a conversion: only the session id changes.`}
+ else if(conv&&$('#fmt').value==='native'){nn.style.display='';nn.innerHTML=`<b>${esc(a?a.label:'?')} → ${esc(AGENTS[conv].label)}</b> is a conversion: tool activity becomes text, thinking and injected context are dropped.`}
+ else if(conv){const f=$('#fmt').value;nn.style.display='';nn.innerHTML=`<b>${esc(a?a.label:'?')} → ${esc(AGENTS[conv].label)}</b> as <b>${esc(f)}</b>: the conversation folded exactly as the conversion folds it (tool activity as bracketed notes, thinking and injected context dropped, import banner first), but written as ${esc(f)} for you to feed in yourself, instead of ${esc(AGENTS[conv].label)}'s own file.`}
+ else nn.style.display='none'}
+function drawWorkspaces(){const tgt=targetAgent()||(cur?cur.agent:'');const ws=(CAT.workspaces||{})[tgt]||[];
+ const sel=$('#workspace');const keep=sel.value;
+ sel.innerHTML=`<option value="" title="leave it in the folder the session was recorded in">the folder it came from</option>`
+  +ws.map(w=>`<option value="${esc(w)}" title="${esc(w)}">${esc(w.split('/').pop()||w)}</option>`).join('');
+ if(keep&&[...sel.options].some(o=>o.value===keep))sel.value=keep;
+ // the workspace only decides anything when the file is being filed into an agent's own store
+ const relevant=$('#dest').value==='install'&&ws.length>0;
+ sel.disabled=!relevant;
+ $('#wsLbl').style.opacity=relevant?'1':'.45';
+ $('#wsLbl').title=relevant?"Which working directory the exported session belongs to. Agents file sessions by directory, so this decides where it turns up when you resume."
+   :"Only used when the location is the agent's own store; that is what files a session under a directory.";
+}
+
+// ---------------------------------------------------------------- render + budget
+function opts(){const t=($('#terms')?$('#terms').value:'').split(',').map(s=>s.trim()).filter(Boolean);
+ const rules={};$$('#redpanel .rrule').forEach(i=>rules[i.value]=i.checked);
+ const hide=[];if($('#hideUser').checked)hide.push('user');if($('#hideAsst').checked)hide.push('assistant');
+ return{mode:$('#mode').value,thinking:$('#thinking').checked,tools:$('#tools').checked,env:$('#env').checked,
+ stamps:$('#stamps').value,...mergeParts($('#merge').value),
+ hide_roles:hide,
+ start:$('#start').value===''?null:+$('#start').value,end:$('#end').value===''?null:+$('#end').value,
+ redact:$('#redact').checked,redact_rules:rules,redact_terms:t,notice:$('#notice').checked}}
+function paint(text){const prev=$('#prev');prev.className='';
+ // One span per RUN of same-class lines, not one per line: a 40-line tool result is one node, not
+ // 40. Measured in Chrome on the 981-message benchmark, full render, 1.24 MB / 10,466 lines:
+ // 1,574 nodes and 168 ms including layout (one span per line was 10,466 nodes). At 10 MB the
+ // grouped paint is 2.0 s against 1.35 s for plain text, so colour is a fraction of a cost the
+ // text itself imposes; there is no size at which it has to be given up, and the old 500 KB
+ // cut-off (which dropped colour on any full render) is gone.
+ if(!SET.view.color_roles){prev.textContent=text;return}
+ const out=[];let role='',cls='',run=[];
+ const flush=()=>{if(run.length){out.push(`<span class="${cls}">${esc(run.join('\n'))}</span>`);run=[]}};
+ for(const l of text.split('\n')){let m,c;
+  if((m=/^\[(USER|ASSISTANT|TOOL|SYSTEM)\] /.exec(l))){role=m[1].toLowerCase();c='h '+role}
+  else if(l.startsWith('  ● '))c='call';
+  else if(l.startsWith('  ↳ '))c='res';
+  else if(l.startsWith('  ▸ '))c='think';
+  else if(l.startsWith('  ⚑ '))c='note';
+  else if(!role||l.startsWith('=== ')||/^(title|project|model|cli|started|messages):\s/.test(l)||l.startsWith('--- '))c='meta';
+  else c='b '+role;
+  if(c!==cls){flush();cls=c}
+  run.push(l)}
+ flush();
+ prev.innerHTML=out.join('\n')}
+const COLS={blocks:['blocks','how many blocks of this element are included, of how many the session has'],
+ chars:['chars','characters as rendered'],
+ remaining:['remaining','what this element would still add if it were included in full'],
+ share:['share','this row divided by selected']};
+function budgetView(b){const all=b.everything,sel=b.selected;$('#tokAll').textContent=fmtN(all);$('#tokSel').textContent=fmtN(sel);
+ $('#n').textContent=`${fmtN(b.messages)} of ${fmtN(b.messages_full)} messages`+(b.exact?'':' · estimated (install tiktoken for exact counts)');
+ const ref=SET.view.reference||1;const pct=Math.min(100,100*sel/ref);$('#fill').style.width=pct+'%';$('#fill').style.background=pct>90?'var(--err)':pct>60?'var(--warn)':'var(--ok)';
+ $('#ghost').style.width=Math.min(100,100*all/ref)+'%';
+ $('#barlbl').textContent=`${Math.round(100*sel/ref)}% of ${fmtN(ref)}`;
+ $('#barlbl').title=`selected against the reference size, ${fmtN(ref)} tokens; change it in Settings → View. The dashed mark is where max context (${fmtN(all)}) lands.`;
+ $('#bar').title=$('#barlbl').title;
+ const cols=['blocks','chars','remaining','share'].filter(c=>SET.view.table.columns.includes(c));
+ const cell=(p,c)=>{if(c==='blocks')return p.blocks==null?'–':(p.blocks===p.full_blocks?fmtN(p.blocks):`${fmtN(p.blocks)} <span class="dim">of ${fmtN(p.full_blocks)}</span>`);
+  if(c==='chars')return p.chars==null?'–':fmtN(p.chars);
+  if(c==='remaining')return p.remaining?fmtN(p.remaining):'–';
+  if(c==='share')return sel?`${(100*p.tokens/sel).toFixed(1)}%`:'–'};
+ const parts=b.parts.filter(p=>!(SET.view.table.hide_empty&&p.full===0&&p.tokens===0))
+   .map(p=>p.key==='notice'?{...p,full:p.tokens,full_blocks:p.blocks,full_chars:p.chars,remaining:0}:p);
+ const sumBlocks=parts.reduce((a,p)=>a+p.blocks,0),sumChars=parts.reduce((a,p)=>a+p.chars,0),sumRem=parts.reduce((a,p)=>a+p.remaining,0);
+ const struct={key:'structure',label:'structure (headers, timestamps)',blocks:null,full_blocks:null,chars:null,tokens:b.structure,remaining:0,on:true};
+ const total={key:'total',label:'total',blocks:sumBlocks,full_blocks:sumBlocks,chars:sumChars,tokens:sel,remaining:sumRem,on:true};
+ const tags=p=>{let s=p.on?'':'<span class="st">off</span>';
+   if(p.on&&p.remaining>0&&(p.key==='tool_results'||p.key==='thinking'))s+=`<span class="st">${b.mode==='brief'?'mentioned only':'capped'}</span>`;return s};
+ const row=(p,cls)=>{const canExp=p.on&&p.remaining>0;
+  return`<tr class="${cls||''}${p.on?'':' off'}${canExp?' exp':''}${canExp&&expanded.has(p.key)?' open':''}" data-k="${p.key}"><td>${esc(p.label)}${tags(p)}</td><td><b>${fmtN(p.tokens)}</b></td>${cols.map(c=>`<td>${cell(p,c)}</td>`).join('')}</tr>`
+   +(canExp&&expanded.has(p.key)?`<tr class="sub"><td>included now</td><td>${fmtN(p.tokens)}</td>${cols.map(()=>'<td></td>').join('')}</tr>`
+     +`<tr class="sub"><td>left out (${b.mode==='brief'?'brief context':'over the cap'})</td><td>${fmtN(p.remaining)}</td>${cols.map(()=>'<td></td>').join('')}</tr>`:'')};
+ $('#parts').innerHTML=`<table class="parts"><thead><tr><th title="element of the transcript">element</th><th title="tokens this element costs in the preview and the export">tokens</th>${cols.map(c=>`<th title="${COLS[c][1]}">${COLS[c][0]}</th>`).join('')}</tr></thead><tbody>${parts.map(p=>row(p)).join('')}${row(struct,'struct')}${row(total,'total')}</tbody></table>`;
+ $$('#parts tr.exp').forEach(tr=>tr.onclick=()=>{const k=tr.dataset.k;expanded.has(k)?expanded.delete(k):expanded.add(k);budgetView(b)})}
+function statusLine(r){
+ // what redaction did belongs next to the redact switch, not next to the import notice
+ if(r.redaction){lastRedaction=r.redaction;
+  $('#redmsg').innerHTML=`<button class="link" id="showMatches" title="see every matched value and its replacement">${esc(r.redaction.report)} · show</button>`;
+  $('#showMatches').onclick=()=>showMatches()}
+ else $('#redmsg').innerHTML='';
+ msg(r.notice?'import notice appended':'')}
+let renderSeq=0;
+async function rerender(){if(!cur)return;msg('rendering…');const seq=++renderSeq;
+ const r=await (await fetch('/api/render',{method:'POST',body:JSON.stringify({...cur,opts:opts()})})).json();
+ if(seq!==renderSeq)return;          // a newer request is in flight; its answer paints, not this stale one
+ if(r.error){msg(esc(r.error),true);return}
+ lastText=r.text;paint(r.text);budgetView(r.budget);statusLine(r)}
+function sched(){clearTimeout(timer);timer=setTimeout(rerender,200)}
+['mode','thinking','env','hideUser','hideAsst','notice','stamps','merge'].forEach(id=>$('#'+id).onchange=rerender);
+$('#tools').onchange=rerender;
+$('#redact').onchange=()=>{$('#redpanel').classList.toggle('on',$('#redact').checked);rerender()};
+['start','end'].forEach(id=>$('#'+id).oninput=sched);
+$('#q').oninput=draw;
+$('#dest').addEventListener('change',drawWorkspaces);       // workspace only matters for an install
+$('#convert').addEventListener('change',()=>{drawFormats();drawWorkspaces()});
+$('#fmt').addEventListener('change',()=>{drawFormats();drawWorkspaces()});
+
+// ---------------------------------------------------------------- redaction matches
+function showMatches(only){if(!lastRedaction)return;let d=lastRedaction.details;
+ if(only)d=d.filter(x=>x.name===only||x.name.startsWith('term:'));
+ $('#m_sum').textContent=`Rules from the toolbar. ${lastRedaction.report}.`;
+ // what was found first, then what it became: the order the replacement actually happens in
+ $('#m_body').innerHTML=`<table><thead><tr><th>rule</th><th>matched values (distinct × count)</th><th>replaced with</th><th>hits</th></tr></thead><tbody>${d.map(x=>`<tr${x.hits?'':' class="dim"'}><td>${esc(x.label)}</td><td>${x.matches.length?x.matches.map(([t,c])=>`<span class="mono">${esc(t)}</span> <span class="dim">×${c}</span>`).join('<br>'):'<span class="dim">nothing</span>'}</td><td class="mono">${esc(x.replacement)}</td><td>${fmtN(x.hits)}</td></tr>`).join('')}</tbody></table>`;
+ $('#matches').showModal()}
+$('#m_close').onclick=()=>$('#matches').close();
+
+// ---------------------------------------------------------------- conversion table
+async function openMatrix(src,dst){const agentsAll=Object.entries(AGENTS);
+ const s=src||(cur?cur.agent:agentsAll[0][0]);const d=dst||(AGENTS[s]&&AGENTS[s].writable?s:'claude-code');
+ if(!$('#x_src').options.length){
+  $('#x_src').innerHTML=agentsAll.map(([k,v])=>`<option value="${k}">${esc(v.label)}</option>`).join('');
+  $('#x_dst').innerHTML=agentsAll.map(([k,v])=>v.writable?`<option value="${k}">${esc(v.label)}</option>`:`<option value="${k}" disabled>${esc(v.label)} (source only)</option>`).join('')}
+ $('#x_src').value=s;$('#x_dst').value=d;await drawMatrix();$('#matrix').showModal()}
+async function drawMatrix(){const s=$('#x_src').value,d=$('#x_dst').value;
+ const m=await (await fetch(`/api/convert-matrix?source=${encodeURIComponent(s)}&target=${encodeURIComponent(d)}`)).json();
+ MATRIX=m;const t=m.targets[d];
+ const rows=m.carry.map(c=>`<tr><td>${esc(c.element)}</td><td class="fate-${c.fate}">${c.fate}</td><td>${esc(c.detail)}</td></tr>`).join('');
+ const sn=m.source_notes[s];
+ const srcNote=`<p class="note"><b>${esc(m.agents[s])} as source:</b> ${esc(sn||'nothing special: normalised into the canonical model first')}.</p>`;
+ const dstNote=t?`<p class="note"><b>${esc(t.label)} as target:</b> last checked ${esc(t.verified)} with ectype ${esc(t.ectype)}, ${esc(t.label)} ${esc(t.version)}. <button class="link" id="x_more">details</button><span id="x_details" style="display:none"><br>resume: <span class="mono">${esc(t.resume)}</span><br>${esc(t.notes)}.</span></p>`:'';
+ $('#x_sum').innerHTML=`<b>${m.native?'Copy':'Conversion'}.</b> ${esc(m.summary)}`;
+ $('#x_body').innerHTML=`<table><thead><tr><th>element</th><th>fate</th><th>detail</th></tr></thead><tbody>${rows}</tbody></table>${m.native?'':srcNote}${dstNote}`;
+ const more=$('#x_more');if(more)more.onclick=()=>{const d=$('#x_details');const show=d.style.display==='none';d.style.display=show?'':'none';more.textContent=show?'less':'details'};
+ $('#x_disc').textContent=m.disclaimer}
+$('#x_src').onchange=drawMatrix;$('#x_dst').onchange=drawMatrix;$('#x_close').onclick=()=>$('#matrix').close();
+$('#h_matrix').onclick=()=>openMatrix();$('#matrixBtn').onclick=()=>openMatrix();
+$('#w_matrix').onclick=()=>openMatrix(cur&&cur.agent,$('#convert').value||undefined);
+
+// ---------------------------------------------------------------- convert warning (one time)
+$('#convert').addEventListener('change',()=>{if(!$('#convert').value||SET.convert.warned)return;$('#convwarn').showModal()});
+$('#w_cancel').onclick=()=>{$('#convert').value='';drawFormats();drawWorkspaces();$('#convwarn').close()};
+$('#w_ok').onclick=async()=>{const s=JSON.parse(JSON.stringify(SET));delete s._path;delete s._exportDir;s.convert={warned:true};
+ const r=await (await fetch('/api/settings',{method:'POST',body:JSON.stringify({settings:s})})).json();if(!r.error)SET.convert.warned=true;$('#convwarn').close()};
+
+// ---------------------------------------------------------------- import notice preview + options
+// The options live here rather than only in Settings, so a change and its effect are on screen
+// together: tick an item, the real wording underneath updates on the spot.
+async function noticeRefresh(){if(!cur)return;
+ const cfg={detailed:$('#nd_detailed').checked,items:$$('#nd_items .ni:checked').map(i=>i.value)};
+ const r=await (await fetch('/api/notice',{method:'POST',body:JSON.stringify({...cur,notice:cfg})})).json();
+ $('#nd_body').textContent=r.text||r.error||'';
+ $$('#nd_items .ni').forEach(i=>i.disabled=!cfg.detailed)}
+$('#noticeBtn').onclick=async()=>{if(!cur){msg('pick a session first',true);return}
+ $('#nd_note').textContent=$('#notice').checked?'Appended as the last message of this export. Changes here apply to every export once saved.'
+   :'The import notice is currently OFF; tick it on the toolbar to append this.';
+ $('#nd_detailed').checked=SET.notice.detailed;
+ $('#nd_items').innerHTML=CAT.notice_items.map(i=>`<label><input type="checkbox" class="ni" value="${i.key}" ${SET.notice.items.includes(i.key)?'checked':''}> ${esc(i.label)}</label>`).join('');
+ $$('#nd_items .ni, #nd_detailed').forEach(i=>i.onchange=noticeRefresh);
+ $('#nd_msg').textContent='';await noticeRefresh();$('#noticedlg').showModal()};
+$('#nd_save').onclick=async()=>{SET.notice.detailed=$('#nd_detailed').checked;
+ SET.notice.items=$$('#nd_items .ni:checked').map(i=>i.value);
+ if(!SET.notice.items.length){$('#nd_msg').textContent='choose at least one item';return}
+ await saveView();$('#nd_msg').textContent='saved';if($('#notice').checked)rerender()};
+$('#nd_close').onclick=()=>$('#noticedlg').close();
+
+// ---------------------------------------------------------------- export
+$('#export').onclick=async()=>{if(!cur){msg('pick a session first',true);return}msg('exporting…');
+ const target=$('#convert').value||undefined;const dest=$('#dest').value;
+ const body={...cur,opts:opts(),name:$('#name').value,format:$('#fmt').value,convert:target,mode:dest,workspace:$('#workspace').value||undefined};
+ const r=await fetch('/api/export',{method:'POST',body:JSON.stringify(body)});
+ if(!r.ok){const e=await r.json().catch(()=>({error:r.statusText}));msg(esc(e.error||'export failed'),true);return}
+ const disp=r.headers.get('Content-Disposition');
+ if(disp){const blob=await r.blob();const u=(/filename\*=UTF-8''([^;]+)/.exec(disp)||[])[1];const name=u?decodeURIComponent(u):((/filename="([^"]+)"/.exec(disp)||[])[1]||'export');
+  const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=name;document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(a.href),10000);
+  const red=r.headers.get('X-Redacted');let line=`downloaded ${esc(name)} (${fmtSize(blob.size)})`+(red?` · redacted: ${esc(red)}`:'');
+  const rep=decodeURIComponent(r.headers.get('X-Fidelity')||'');const foldedFor=r.headers.get('X-Folded-For');
+  if(rep&&foldedFor){const lbl=AGENTS[foldedFor]?AGENTS[foldedFor].label:foldedFor;
+   line=`downloaded ${esc(name)} (${fmtSize(blob.size)}), folded for ${esc(lbl)} · <button class="link" id="showReport">report</button>`;
+   msg(line);$('#showReport').onclick=()=>{$('#r_where').textContent=`Folded as a conversion to ${lbl} would be, written as ${$('#fmt').value}. Feed it to ${lbl} yourself.`;$('#r_body').textContent=rep;$('#report').showModal()};return}
+  if(rep){const rel=decodeURIComponent(r.headers.get('X-Target-Relpath')||'');const home=decodeURIComponent(r.headers.get('X-Target-Home')||'');
+   const native=r.headers.get('X-Native')==='1',zip=r.headers.get('X-Bundle')==='zip';
+   // a zip means the transcript points at spill files that travel with it: unpack the whole layout
+   line=zip?`${native?'copied':'converted'}: downloaded ${esc(name)}: unzip it under <span class="mono">${esc(home)}</span> (the transcript is ${esc(rel)} inside, with its spill files) · <button class="link" id="showReport">report</button>`
+           :`${native?'copied':'converted'}: downloaded ${esc(name)}: place it at <span class="mono">${esc(home)}/${esc(rel)}</span> · <button class="link" id="showReport">report</button>`;
+   msg(line);$('#showReport').onclick=()=>{$('#r_where').textContent=zip?`Unzip it under ${home}: the transcript lands at ${home}/${rel} with its spill files beside it.`:`Put the file at ${home}/${rel} and resume it there.`;$('#r_body').textContent=rep;$('#report').showModal()};return}
+  msg(line)}
+ else{const j=await r.json();
+  let line=(j.mode==='install'?`installed into ${esc(j.target_home)}`:`saved ${esc(j.path)}`)+` (${fmtSize(j.bytes)})`+(j.redacted?` · redacted: ${esc(j.redacted)}`:'');
+  if(j.report){line+=` · <button class="link" id="showReport">report</button>`;msg(line);
+   $('#showReport').onclick=()=>{$('#r_where').textContent=j.folded_for?`Written to ${j.path}, folded for ${AGENTS[j.folded_for]?AGENTS[j.folded_for].label:j.folded_for}. Report: ${j.report_path}`:j.mode==='install'
+     ?`${j.path}\n${j.resume||''}\nFidelity report: ${j.report_path}`
+     :`Written to ${j.path} (mirrors the target's layout: ${j.relpath} under ${j.target_home}). Report: ${j.report_path}`;
+    $('#r_body').textContent=j.report;$('#report').showModal()}}
+  else msg(line)}};
+$('#r_close').onclick=()=>$('#report').close();
+
+// ---------------------------------------------------------------- settings dialog
+async function noticePreview(){const detailed=$('#s_nDetailed').checked;const items=$$('#s_nItems input:checked').map(i=>i.value);
+ $$('#s_nItems input').forEach(i=>i.disabled=!detailed);
+ if(cur){   // the real wording for the selected session, exactly like the toolbar's preview button
+  const r=await (await fetch('/api/notice',{method:'POST',body:JSON.stringify({...cur,notice:{detailed,items}})})).json();
+  $('#s_nPreview').textContent=r.text||r.error||'';return}
+ const head='[Import notice] This conversation was imported from <agent> session <id> (recorded <date>) into a different environment by AI Agent Ectype on <today>.';
+ $('#s_nPreview').textContent=(detailed?head+'\n'+(items.length?items.map(k=>'- '+(CAT.notice_items.find(x=>x.key===k)||{}).label).join('\n'):'- (choose at least one item)'):head+' Everything environment-specific in it is stale: re-check the working directory and paths, the date and time, the operating system and which tools are available before acting on anything.')
+  +'\n\n(pick a session on the left to see this with its real values)'}
+async function openSettings(){const [agents,cfg]=await Promise.all([fetch('/api/agents').then(r=>r.json()),fetch('/api/settings').then(r=>r.json())]);
+ const s=cfg.settings;$('#platName').textContent=cfg.platform;
+ $('#agentsTbl tbody').innerHTML=agents.map(a=>{const saved=(s.agents[a.name]||{}).home||'';const envSet=a.home_source==='env';
+  const det=a.error?`<span class="dim" title="${esc(a.error)}">⚠ could not be read: ${esc(a.error)}</span>`:a.available?`✓ ${a.sessions==null?'':fmtN(a.sessions)+' sessions'}`:'<span class="dim">not found</span>';
+  const nat=a.writable?esc(a.native_format):'<span class="dim">source only</span>';
+  return`<tr data-a="${a.name}"><td><input type="checkbox" class="en" ${a.enabled?'checked':''}></td><td>${esc(a.label)}<div class="srcnote">${a.name}</div></td><td><span class="cat">${a.category==='chat'?'chat app':'coding agent'}</span></td><td>${nat}</td><td>${det}</td>
+   <td><input type="text" class="path home" value="${esc(saved)}" placeholder="${esc(a.default_home)}" ${envSet?'disabled':''}><div class="srcnote">${envSet?`set by $${a.env_home} = ${esc(a.home)} (env var wins)`:a.home_source==='settings'?`saved · resolves to ${esc(a.home)}`:`default for ${cfg.platform} · resolves to ${esc(a.home)}`}</div></td></tr>`}).join('');
+ $('#s_mode').innerHTML=cfg.modes.map(m=>`<option value="${m.key}" title="${esc(m.label)}">${m.key}: ${esc(m.label)}</option>`).join('');$('#s_mode').value=s.view.mode;
+ $('#s_color').checked=s.view.color_roles;$('#s_ref').value=s.view.reference;$('#s_cap').value=s.view.cap;$('#s_thinking').checked=s.view.thinking;$('#s_tools').checked=s.view.tools;$('#s_env').checked=s.view.env;$('#s_toolhdr').checked=s.view.tool_headers;$('#s_markers').checked=s.view.markers;$('#s_merge').innerHTML=MERGE_OPTS;$('#s_merge').value=mergeOf(s.view);$('#s_stamps').value=s.view.stamps;
+ $('#s_cols').innerHTML=cfg.columns.map(c=>`<label title="${COLS[c][1]}"><input type="checkbox" class="col" value="${c}" ${s.view.table.columns.includes(c)?'checked':''}> ${c}</label>`).join('');
+ $('#s_hideEmpty').checked=s.view.table.hide_empty;
+ $('#s_rules').innerHTML=cfg.rules.map(r=>`<label><input type="checkbox" class="rule" value="${r.name}" ${s.redact[r.name]?'checked':''}> ${esc(r.label)}</label>`).join('');
+ $('#s_tz').checked=s.redact.timezone;$('#s_terms').value=(s.redact.terms||[]).join('\n');
+ $$('input[name=s_dest]').forEach(r=>r.checked=r.value===s.export.mode);$('#s_folder').value=s.export.folder;$('#s_folder').placeholder=cfg.export_dir;
+ $('#s_fmt').innerHTML=cfg.formats.map(f=>`<option value="${f}">${f}</option>`).join('');$('#s_fmt').value=s.export.format;
+ $('#s_nEnabled').checked=s.notice.enabled;$('#s_nDetailed').checked=s.notice.detailed;
+ $('#s_nItems').innerHTML=cfg.notice_items.map(i=>`<label><input type="checkbox" class="nitem" value="${i.key}" ${s.notice.items.includes(i.key)?'checked':''}> ${esc(i.label)}</label>`).join('');
+ $$('#s_nItems input, #s_nDetailed').forEach(i=>i.onchange=noticePreview);noticePreview();
+ $('#s_path').textContent='config file: '+cfg.path;
+ $('#s_msg').textContent=cfg.load_error?'the settings file could not be read ('+cfg.load_error+'): these are the defaults; Save keeps the old file as .bad-… and writes a fresh one':'';$('#settings').showModal()}
+$('#s_refPreset').onchange=e=>{if(e.target.value){$('#s_ref').value=e.target.value;e.target.value=''}};
+$('#setBtn').onclick=openSettings;$('#s_cancel').onclick=()=>$('#settings').close();
+$('#s_save').onclick=async()=>{const agents={};$$('#agentsTbl tbody tr').forEach(tr=>{const en=tr.querySelector('.en').checked;const home=tr.querySelector('.home');agents[tr.dataset.a]={enabled:en,home:home.disabled?null:(home.value.trim()||null)}});
+ const redact={timezone:$('#s_tz').checked,terms:$('#s_terms').value.split('\n').map(x=>x.trim()).filter(Boolean)};$$('#s_rules .rule').forEach(i=>redact[i.value]=i.checked);
+ const body={agents,view:{color_roles:$('#s_color').checked,reference:+$('#s_ref').value||200000,mode:$('#s_mode').value,cap:+$('#s_cap').value||0,
+   thinking:$('#s_thinking').checked,tools:$('#s_tools').checked,env:$('#s_env').checked,tool_headers:$('#s_toolhdr').checked,markers:$('#s_markers').checked,...mergeParts($('#s_merge').value),stamps:$('#s_stamps').value,
+   table:{columns:$$('#s_cols .col:checked').map(i=>i.value),hide_empty:$('#s_hideEmpty').checked},
+   // POST /api/settings is a full REPLACE: anything left out of the body goes back to its default.
+   // The session-list columns and sort order are set from the list header, not from this dialog,
+   // so they have to be carried through here or saving Settings silently resets them.
+   list:SET.view.list},
+  redact,export:{mode:($$('input[name=s_dest]').find(r=>r.checked)||{}).value||'download',folder:$('#s_folder').value.trim(),format:$('#s_fmt').value},
+  notice:{enabled:$('#s_nEnabled').checked,detailed:$('#s_nDetailed').checked,items:$$('#s_nItems .nitem:checked').map(i=>i.value)},convert:{warned:SET.convert.warned}};
+ const r=await (await fetch('/api/settings',{method:'POST',body:JSON.stringify({settings:body})})).json();
+ if(r.error){$('#s_msg').textContent=r.error;$('#s_msg').style.color='var(--err)';return}
+ $('#settings').close();await loadSettings();await loadSessions();if(cur)rerender();msg('settings saved')};
+$('#helpBtn').onclick=()=>$('#help').showModal();$('#h_close').onclick=()=>$('#help').close();
+boot();
+</script></body></html>
