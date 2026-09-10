@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ectype-cli"
-version = "0.2.1"
+version = "0.3.0"
 description = "Read, filter, redact, export and resume the on-disk sessions of ten AI coding agents and three chat apps. Command line and a local web UI."
 readme = "README.md"
 requires-python = ">=3.10"

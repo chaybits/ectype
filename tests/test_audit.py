@@ -343,6 +343,43 @@ def test_f2_open_webui_tool_trace_lives_in_the_output_parts() -> None:
           "a status other than completed marks the result as an error")
 
 
+def test_f2_backup_copies_a_session_and_puts_it_back() -> None:
+    """`ectype backup` is the answer to "point it at data you can afford to lose", which was advice
+    rather than a feature. A backup copies every file of a session (transcript AND sidecars),
+    records where each came from, and restores to exactly those paths. `at_risk` stays honest: an
+    install that only adds a file puts nothing at risk, and Codex is the one writer that appends to
+    a store file that already exists."""
+    from ectype import backup as bk
+    spill = {"aaaa2222-0000-0000-0000-00000000000b/out.txt": b"the full tool output"}
+    home = claude_store("bk", {"aaaa2222-0000-0000-0000-00000000000b":
+                               [rec("aaaa2222-0000-0000-0000-00000000000b", "user", "u1", None, 0, "hello")]},
+                        spills=spill)
+    cfg = TMP / "bk-config"; cfg.mkdir(exist_ok=True)
+    with with_env(ECTYPE_CLAUDE_HOME=str(home), ECTYPE_CONFIG=str(cfg / "settings.json")):
+        ad = adapters.get("claude-code")
+        ref = ad.discover()[0]
+        folder = bk.save([src for src, _ in ad.artifacts(ref)], "test", agent="claude-code")
+        check(folder is not None and folder.parent == cfg / "backups", f"the backup lands beside the settings file ({folder})")
+        man = json.loads((folder / bk.MANIFEST).read_text(encoding="utf-8"))
+        check(len(man["files"]) == 2, f"the transcript AND its spill file are copied ({len(man['files'])})")
+        check(all(Path(f["from"]).exists() for f in man["files"]), "the manifest records real source paths")
+        # break the original, then put it back
+        ref.path.write_text("ruined\n", encoding="utf-8")
+        dry = bk.restore(folder.name, dry_run=True)
+        check(ref.path.read_text(encoding="utf-8") == "ruined\n", "a dry run writes nothing")
+        check(len(dry) == 2 and all(ok for _, ok in dry), "a dry run still names every destination")
+        done = bk.restore(folder.name)
+        check(len(done) == 2 and ref.path.read_text(encoding="utf-8") != "ruined\n", "restoring puts the transcript back")
+        check(adapters.get("claude-code").load(ref).messages, "the restored session parses again")
+        check(bk.save([TMP / "does-not-exist"], "nothing") is None, "nothing to save is None, not an empty folder")
+        names = [b["name"] for b in bk.listing()]
+        check(folder.name in names, "the backup shows up in the listing")
+    check([p.name for p in bk.at_risk("codex", Path("/store"))] == ["session_index.jsonl", "thread_history.sqlite"],
+          "Codex names the two store files its install modifies")
+    check(bk.at_risk("claude-code", Path("/store")) == [] and bk.at_risk("gemini-cli", Path("/store")) == [],
+          "a writer that only adds a file puts nothing at risk")
+
+
 def test_f2_rename_native_where_the_store_has_a_name_local_everywhere_else() -> None:
     """Renaming writes into the agent's own store only where the store has a place for a name a
     human chose. Claude Code does (`custom-title.json`, the file it writes itself); the other

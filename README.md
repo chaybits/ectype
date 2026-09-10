@@ -17,17 +17,23 @@ with tool output reduced to names, and you can see the difference before you spe
 ## Install
 
 ```bash
-pipx install ectype-cli      # or: pip install ectype-cli, uv tool install ectype-cli
-ectype agents                # which stores exist on this machine
+pipx install ectype-cli                             # or: pip install ectype-cli
+uv tool install ectype-cli                          # the same, through uv
+pip install "ectype-cli[tokens]"                    # plus tiktoken, for exact token counts
+pip install git+https://github.com/chaybits/ectype  # the tip of main instead of a release
+ectype agents                                       # which stores exist on this machine
 ```
 
 Python 3.10+ and no dependencies. The distribution is `ectype-cli`; the command and the import
-package are both `ectype`. For exact token counts instead of the 4-characters-per-token estimate,
-add the `tokens` extra: `pip install "ectype-cli[tokens]"`. To run the tip of main instead of a
-release, `pip install git+https://github.com/chaybits/ectype`.
+package are both `ectype`. Without the `tokens` extra, token counts are estimated at four
+characters each.
 
-Or install nothing at all: every release carries **`ectype.pyz`**, the whole program as one file.
-Download it and run `python ectype.pyz gui`.
+Every release also carries **`ectype.pyz`**, the whole program as a single file. A `.pyz` is
+an ordinary zip archive with an entry point inside it, and Python runs one directly, so
+`python ectype.pyz gui` is all of it: Linux, macOS and Windows alike (`py ectype.pyz gui` there).
+On Unix the file is also marked executable, so `./ectype.pyz gui` works after a `chmod +x`. It
+carries the program, not the interpreter, so Python 3.10+ still has to be installed. This is
+possible only because there are no dependencies to install beside it.
 
 Each agent's store is resolved in one order: **`$ECTYPE_<AGENT>_HOME`** (Codex uses its own
 `$CODEX_HOME`), then the path saved in Settings, then the agent's own default. `ectype agents`
@@ -100,6 +106,17 @@ The default view keeps the conversation, every tool call, and the first 150 toke
 result; thinking is off. `--cap N` moves that limit (`--cap 0` cuts nothing), `--thinking` adds
 the reasoning, `--no-tools` drops tool activity altogether. Without `-o` it prints to stdout.
 
+### Know what happened in it
+
+```bash
+ectype summarize a1b2c3d4        # asks, tools, files, commands, errors, keywords
+```
+
+Extracted from the transcript, with no model and no API key: what was asked, which tools ran and
+how often, which files were touched, which commands ran, what failed, and a lowercase keyword line
+meant for `grep` rather than for reading. On a 981-message session that is a few hundred tokens
+against 347,517 for the transcript, which is often enough to decide whether to open it at all.
+
 ### Export it
 
 ```bash
@@ -169,6 +186,20 @@ Two flags spend a small API call to replace a guess with a fact, so neither is e
 template, so the envelope matches the release you actually have installed. `--verify`, after an
 `--install`, resumes the installed session in the target agent and reports whether it answered.
 
+### Keep a copy
+
+```bash
+ectype backup a1b2c3d4                  # the transcript and every sidecar file it owns
+ectype backup --list                    # what has been saved, newest first
+ectype backup --restore NAME --dry-run  # names every destination, writes nothing
+```
+
+Each backup is one timestamped folder with a manifest recording where every file came from, which
+is what lets `--restore` put them back without guessing. An install takes one of these by itself
+whenever it would modify a file the store already owns, and `--no-backup` opts out. Most installs
+only add a file and so need nothing: Codex is the exception, because it appends to the store's own
+session index and its migration rewrites the thread history.
+
 ### Browse it
 
 ```bash
@@ -226,10 +257,10 @@ is counted.
 
 ![Names only: the tool's name alone; the table shows what is left out](docs/showcase/2-names-only-budget.jpg)
 
-The same dial on a different shape of session: 55 messages whose tool results alone come to 1.8M
-tokens. Nothing is capped in the ceiling, and the default view of it is 3,542 tokens.
+And the same session with everything switched on and nothing capped, which is where the first
+table comes from:
 
-![Everything mode on a 1.8 M-token session](docs/showcase/6-everything-mode-1.8M.jpg)
+![Everything on, nothing capped: every element of one session, counted exactly](docs/showcase/6-everything-mode.jpg)
 
 ## Web UI
 
@@ -284,20 +315,21 @@ Times are printed in local time; every store records UTC internally.
 ## Disclaimer
 
 `ectype` reads, and on request writes, the private files of other programs, whose formats are
-undocumented and can change with any release of those programs. Point it at data you can afford
-to lose.
+undocumented and can change with any release of those programs.
 
+- **It takes a copy before it disturbs anything.** `ectype backup <id>` saves a session and every
+  sidecar file that belongs to it, `--list` shows what has been saved, and `--restore NAME` puts
+  it back (`--dry-run` first, which names every destination and writes nothing). An install that
+  would modify a file the store already owns takes that copy by itself, unless you pass
+  `--no-backup`.
 - **Redaction is best effort, not a guarantee.** It replaces what its rules match, and no set of
   rules can know every secret a transcript happens to contain. Read an export before you share it;
   that is what the list of matched values is for.
 - **`--install` and the "put it in the agent's store" location write into a live agent's store.**
-  Close the agent first, and keep a copy of anything you would miss.
+  Close the agent first.
 - **A conversion is not a restoration.** A converted session gives another agent the conversation,
   not the state the original ran with: paths, files, versions and tools may all differ. The import
   notice exists to say so to the model that receives it.
-
-There is no warranty of any kind, as spelled out in sections 15 and 16 of the GPL. The software is
-provided as is, and the risk of running it is yours.
 
 ## License
 

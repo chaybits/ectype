@@ -9,6 +9,8 @@
   ectype fixture <id-prefix> -o DIR   copy the agent's RAW files, redacted, as a test fixture
   ectype gui [--port N] [--no-open]   local web UI: browse, toggle, live token budget, export, settings
   ectype settings [--path]            print the settings file (where store paths and GUI defaults live)
+ectype backup <id> | --list | --restore NAME
+                                    copies of a session's files, and of anything an install would disturb
 ectype summarize <id-prefix>        what happened in it: asks, tools, files, commands, errors, keywords
 ectype mcp [--allow-write]          MCP server on stdin/stdout: an agent reads its own past sessions
   ectype convert <id-prefix> [--to AGENT] [--template FILE] [--workspace DIR] [-o DIR | --install]
@@ -223,6 +225,12 @@ def cmd_convert(a):
     s = source if native else (red.session(source) if red else source)
     out_dir = Path(a.output or "ectype-converted")
     extra = [(src, rel) for src, rel in ad.artifacts(ref) if src != source.path] if native else None
+    if a.install and a.backup:
+        from . import backup as bk
+        risky = bk.at_risk(target, adapters.get(target).home())
+        folder = bk.save(risky, f"install-into-{target}", agent=target)
+        if folder:
+            print(f"backed up {len(risky)} store file(s) first: {folder}")
     template = Path(a.template) if a.template else None
     if a.mint_template:
         if target == ref.agent:
@@ -261,6 +269,36 @@ def cmd_convert(a):
 def cmd_gui(a):
     from .web import serve
     serve(port=a.port, open_browser=not a.no_open, export_dir_default=Path(a.export_dir) if a.export_dir else None)
+
+
+def cmd_backup(a):
+    from . import backup as bk
+    if a.list:
+        rows = bk.listing()
+        if not rows:
+            print(f"no backups under {bk.root()}")
+            return
+        print(f"{'name':<44}{'files':>6}  why")
+        for r in rows:
+            print(f"{r['name']:<44}{len(r['files']):>6}  {r['why']}")
+        return
+    if a.restore:
+        done = bk.restore(a.restore, dry_run=a.dry_run)
+        for dest, ok in done:
+            print(("would restore " if a.dry_run else "restored ") + str(dest) if ok else f"MISSING in backup: {dest}")
+        if a.dry_run:
+            print("nothing was written (--dry-run); run it again without --dry-run to put these back")
+        return
+    if not a.id:
+        sys.exit("ectype backup: give a session id, or --list, or --restore NAME")
+    ref = _resolve(a.id, a.agent, a.project)
+    ad = adapters.get(ref.agent)
+    folder = bk.save([src for src, _ in ad.artifacts(ref)], f"{ref.agent}-{ref.id[:8]}", agent=ref.agent)
+    if folder is None:
+        sys.exit(f"nothing to back up: no file of {ref.id[:8]} is on disk")
+    n = len(json.loads((folder / bk.MANIFEST).read_text(encoding="utf-8"))["files"])
+    print(f"backed up {n} file(s) to {folder}")
+    print(f"put them back with: ectype backup --restore {folder.name}")
 
 
 def cmd_summarize(a):
@@ -370,6 +408,8 @@ def main(argv=None):
                         "spends a small API call")
     c.add_argument("-o", "--output", help="output dir (default ./ectype-converted); mirrors the target's home layout")
     c.add_argument("--install", action="store_true", help="write straight into the target agent's live store")
+    c.add_argument("--no-backup", dest="backup", action="store_false",
+                   help="skip the copy of any store file the install would modify (Codex's session index); on by default")
     c.add_argument("--workspace", help="the working directory the copy belongs to (decides where the agent files it)")
     c.add_argument("--no-banner", action="store_true", help="omit the leading 'imported from …' user message")
     _add_redact_args(c); _add_notice_args(c); c.set_defaults(fn=cmd_convert)
@@ -378,6 +418,13 @@ def main(argv=None):
     g.set_defaults(fn=cmd_gui)
     st = sub.add_parser("settings"); st.add_argument("--path", action="store_true", help="print only the file path")
     st.set_defaults(fn=cmd_settings)
+    bkp = sub.add_parser("backup", help="copy a session's files, list backups, or put one back")
+    bkp.add_argument("id", nargs="?"); bkp.add_argument("-a", "--agent")
+    bkp.add_argument("--project", help="part of the session file's path; picks one when the same id exists under two project folders")
+    bkp.add_argument("--list", action="store_true", help="every backup taken so far, newest first")
+    bkp.add_argument("--restore", metavar="NAME", help="put one back where it came from")
+    bkp.add_argument("--dry-run", action="store_true", help="with --restore: say what would be written, write nothing")
+    bkp.set_defaults(fn=cmd_backup)
     sm = sub.add_parser("summarize", help="what happened in a session, extracted (no model, no API key)")
     sm.add_argument("id"); sm.add_argument("-a", "--agent"); sm.add_argument("-o", "--output")
     sm.add_argument("--project", help="part of the session file's path; picks one when the same id exists under two project folders")

@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.3.0 (2026-09-10)
+
+- **`ectype backup`.** A copy of a session and every sidecar file it owns, in one timestamped
+  folder with a manifest of where each file came from. `--list` shows what has been saved,
+  `--restore NAME` puts it back, and `--dry-run` names every destination without writing.
+- **Installs back themselves up.** When an install would modify a file the store already owns, it
+  takes that copy first. Most do not need one, because they only add a file; Codex is the
+  exception, since it appends to the store's session index and its migration rewrites the thread
+  history. `--no-backup` opts out.
+- README: every install route in one block, an explanation of what the single-file `.pyz` is and
+  how to run it on each platform, and an *everything mode* screenshot retaken on the same session
+  the token tables describe, so the picture and the prose carry the same numbers.
+
 ## 0.2.1 (2026-09-10)
 
 - **`ectype summarize <id>`, and `summarize_session` over MCP.** What happened in a session,
