@@ -27,7 +27,7 @@ from pathlib import Path
 
 from ..jsonl import read_jsonl
 from ..model import ContentBlock, Message, Session, SessionRef, parse_ts
-from .base import Adapter
+from .base import TITLE_CHARS, Adapter
 
 _REQ = re.compile(r"<USER_REQUEST>\s*(.*?)\s*</USER_REQUEST>", re.S)
 _PREAMBLE = re.compile(r"^(?:Created At: .*\n|Completed At: .*\n)+\n?")
@@ -79,10 +79,14 @@ class AntigravityAdapter(Adapter):
             return {}
         try:
             con = sqlite3.connect(db.resolve().as_uri() + "?mode=ro", uri=True)
-            rows = con.execute("select conversation_id, title, workspace_uris from conversation_summaries").fetchall()
-            con.close()
         except sqlite3.Error:
             return {}
+        try:
+            rows = con.execute("select conversation_id, title, workspace_uris from conversation_summaries").fetchall()
+        except sqlite3.Error:
+            return {}
+        finally:
+            con.close()                              # on the failure path too
         return {r[0]: (r[1] or None, _file_uri(r[2])) for r in rows}
 
     def _workspace(self, sid: str) -> str | None:
@@ -140,10 +144,14 @@ class AntigravityAdapter(Adapter):
             return self._side_workspaces().get(sid)
         try:
             con = sqlite3.connect(db.resolve().as_uri() + "?mode=ro", uri=True)
-            row = con.execute("select data from trajectory_metadata_blob").fetchone()
-            con.close()
         except sqlite3.Error:
             return self._side_workspaces().get(sid)
+        try:
+            row = con.execute("select data from trajectory_metadata_blob").fetchone()
+        except sqlite3.Error:
+            return self._side_workspaces().get(sid)
+        finally:
+            con.close()
         return _file_uri(row[0] if row else None) or self._side_workspaces().get(sid)
 
     def artifacts(self, ref: SessionRef) -> list[tuple[Path, str]]:
@@ -226,12 +234,15 @@ class AntigravityAdapter(Adapter):
                     last_calls.pop(0)
                 msgs.append(Message(len(msgs), "tool", ts, [b], id=f"step-{idx}"))
             elif t == "SYSTEM_MESSAGE":
-                msgs.append(Message(len(msgs), "system", ts, [ContentBlock("system", content)], id=f"step-{idx}"))
+                # the CLI's own note to itself (a model switch, a setting): an agent notice, so the
+                # same toggle governs it as Claude Code's `system` records (ARCHITECTURE D19)
+                msgs.append(Message(len(msgs), "system", ts, [ContentBlock("system", content, meta={"subtype": "system_message"})],
+                                    id=f"step-{idx}", meta={"agent_notice": "system_message"}))
         title = ref.title
         if not title:
             for m in msgs:
                 if m.role == "user" and m.texts().strip():
-                    title = m.texts().strip().splitlines()[0][:80]
+                    title = m.texts().strip().splitlines()[0][:TITLE_CHARS]
                     break
         cwd = self._cwd(ref.id)
         return Session(self.name, ref.id, ref.path, msgs, title=title, project=ref.project or (Path(cwd).name if cwd else None),

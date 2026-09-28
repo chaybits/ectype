@@ -17,6 +17,7 @@ import dataclasses
 import html as _html
 import io
 import json
+import re
 from .. import tokens
 from ..model import ContentBlock, Message, Session, json_default as _default
 from .text import RenderOptions, _args, _fmt, _result_flags, call_label, render, wrap_session
@@ -25,6 +26,9 @@ _ROLE = {"user": "User", "assistant": "Assistant", "tool": "Tool", "system": "Sy
 
 
 def _label(m: Message) -> str:
+    peer = m.meta.get("peer")
+    if isinstance(peer, dict):     # another session's message, named, never filed under the user
+        return "Message from " + (peer.get("name") or (peer.get("from") or "")[:8] or "another session")
     return "Injected context" if m.is_env else _ROLE.get(m.role, m.role)
 
 
@@ -82,14 +86,33 @@ def _msg_text(m: Message, arg_chars: int) -> str:
     return "\n\n".join(parts)
 
 
+_UNSAFE_NAME = re.compile(r"[^\w.\- ()]+")        # file names: word chars (any script), dot, dash, space, parens
+
+
+def export_name(raw: str | None, agent: str, sid: str, fmt: str) -> str:
+    """A file name for an export: the typed name, else `<agent>_<id8>`, BOTH sanitised (a SillyTavern
+    id carries a `/`, an Aider id is a folder name), bounded so it stays a legal name. One helper for
+    the CLI's `-o <folder>` and the web UI (audit 2026-09-25, F53 and F83)."""
+    base = _UNSAFE_NAME.sub("_", ((raw or "").strip() or f"{agent}_{sid[:8]}")).strip(" .")[:150] or "export"
+    ext = extension(fmt)
+    return base if base.lower().endswith("." + ext) else f"{base}.{ext}"
+
+
+def _cell(text: str) -> str:
+    """A text cell a spreadsheet will not evaluate: `=`, `+`, `-`, `@` (and a leading tab or CR) make
+    it a formula, so a transcript line `=HYPERLINK(…)` became a live link and a markdown list opened as
+    #NAME?. The apostrophe is the conventional escape (OWASP CSV injection); only the text column."""
+    return "'" + text if text[:1] in ("=", "+", "-", "@", "\t", "\r") else text
+
+
 def to_csv(s: Session, o: RenderOptions, source: Session | None = None) -> str:
     buf = io.StringIO()
     w = csv.writer(buf, lineterminator="\n")
     w.writerow(["index", "role", "timestamp", "model", "kinds", "chars", "text"])
     for m in s.messages:
         kinds = "+".join(dict.fromkeys(b.kind for b in m.blocks))
-        w.writerow([m.index, "env" if m.is_env else m.role, m.timestamp.isoformat() if m.timestamp else "",
-                    m.model or "", kinds, sum(b.chars for b in m.blocks), _msg_text(m, o.arg_chars)])
+        w.writerow([m.index, "peer" if m.meta.get("peer") else "env" if m.is_env else m.role, m.timestamp.isoformat() if m.timestamp else "",
+                    m.model or "", kinds, sum(b.chars for b in m.blocks), _cell(_msg_text(m, o.arg_chars))])
     return "\ufeff" + buf.getvalue()        # BOM so spreadsheets open UTF-8 (non-ASCII text) correctly
 
 
@@ -110,14 +133,14 @@ def _md_block(b: ContentBlock, o: RenderOptions) -> str | None:
         if not o.tool_calls:
             return None
         a = _args(b.args, o.arg_chars).replace("`", "ˋ")
-        return f"**▶ {b.name}** `{a}`" if a else f"**▶ {b.name or '?'}**"
+        return f"**▶ {b.name or '?'}** `{a}`" if a else f"**▶ {b.name or '?'}**"
     if b.kind == "tool_result":
         if not o.tool_results:
             return None
         f = _flags(b)
-        brief = b.meta.get("brief")
-        if brief is not None:
-            return f"*result · {brief:,} chars, mentioned only, output not included*" + (f" *· {', '.join(f)}*" if f else "")
+        if b.meta.get("brief") is not None:
+            # names only, as in the text render: no result line and no size, a failure flagged
+            return "*error*" if b.is_error else None
         fence = _fence(b.text)
         head = f"result · {b.chars:,} chars" + (f" · {', '.join(f)}" if f else "")
         return f"*{head}*\n\n{fence}text\n{b.text.rstrip()}\n{fence}"
@@ -143,7 +166,7 @@ def to_markdown(s: Session, o: RenderOptions, source: Session | None = None) -> 
         body = [p for p in (_md_block(b, o) for b in m.blocks) if p]
         if not body:
             continue
-        head = f"### {_label(m)} · {_fmt(m.timestamp, o.local_time)}"
+        head = f"### {_label(m)}" + (f" · {_fmt(m.timestamp, o.local_time, style=o.stamps)}" if o.stamps != "none" else "")
         if m.model and m.role == "assistant":
             head += f" · {m.model}"
         if m.meta.get("wrapped"):        # one message holding the transcript: fence it so the lines survive
@@ -192,9 +215,8 @@ def _html_block(b: ContentBlock, o: RenderOptions) -> str | None:
             return None
         f = _flags(b)
         cls = " err" if b.is_error else ""
-        brief = b.meta.get("brief")
-        if brief is not None:
-            return f"<div class='note{cls}'>result · {brief:,} chars, mentioned only, output not included" + (f" · {e(', '.join(f))}" if f else "") + "</div>"
+        if b.meta.get("brief") is not None:
+            return "<div class='note err'>error</div>" if b.is_error else None
         head = f"result · {b.chars:,} chars" + (f" · {e(', '.join(f))}" if f else "")
         return f"<details class='res{cls}'><summary>{head}</summary><pre>{e(b.text.rstrip())}</pre></details>"
     if b.kind in ("system", "info", "error"):
@@ -221,12 +243,13 @@ def to_html(s: Session, o: RenderOptions, source: Session | None = None) -> str:
         body = [p for p in (_html_block(b, o) for b in m.blocks) if p]
         if not body:
             continue
-        cls = "env" if m.is_env else m.role
+        cls = "peer" if m.meta.get("peer") else "env" if m.is_env else m.role
         model = f"<span class=model>{e(m.model)}</span>" if m.model and m.role == "assistant" else ""
         if m.meta.get("wrapped"):
             model = f"<span class=model>the whole transcript as one message ({m.meta['wrapped']:,} turns)</span>"
         out.append(f"<section class='msg {cls}'><h2><span class=role>{e(_label(m))}</span>"
-                   f"<time>{e(_fmt(m.timestamp, o.local_time))}</time>{model}</h2>{''.join(body)}</section>")
+                   + (f"<time>{e(_fmt(m.timestamp, o.local_time, style=o.stamps))}</time>" if o.stamps != "none" else "")
+                   + f"{model}</h2>{''.join(body)}</section>")
     page = "".join(out)
     return page + f"<footer>{e(_stamp(page))} · exported by AI Agent Ectype</footer></body></html>\n"
 

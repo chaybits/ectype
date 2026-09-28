@@ -88,7 +88,7 @@ def main() -> int:
     check(all(a["category"] in ("coding", "chat") for a in agents), "every adapter has a category")
     check(all(not a["enabled"] for a in agents if a["category"] == "chat"), "chat apps are off by default")
     writable = {a["name"] for a in agents if a["writable"]}
-    check(writable == {"claude-code", "codex", "gemini-cli"}, f"exactly the verified-resumable agents are writable ({', '.join(sorted(writable))})")
+    check(writable == {"claude-code", "codex", "gemini-cli", "cline"}, f"exactly the verified-resumable agents are writable ({', '.join(sorted(writable))})")
     check(all(a["native_format"] for a in agents if a["writable"]) and all(a["native_format"] is None for a in agents if not a["writable"]),
           "every writable agent names its resume format, and no source-only agent claims one")
 
@@ -278,7 +278,11 @@ def main() -> int:
             first = json.loads(raw.decode("utf-8").splitlines()[0])
             check(first.get("type") == "session", "jsonl starts with a session header line")
     st, h, raw = c.post("/api/export", {**key, "opts": {**base, "notice": True}, "name": "conv-test", "format": "native", "convert": "claude-code"})
-    check(st == 200 and "attachment" in h.get("content-disposition", "") and raw.startswith(b"{") and "x-fidelity" in h, f"convert to claude-code: download with fidelity header ({len(raw):,} B)")
+    # the newest real session decides the shape: a transcript alone is the .jsonl (starts with "{");
+    # one with spill files comes as the store-layout zip the fidelity note promises (X-Bundle: zip)
+    shape_ok = (raw.startswith(b"{") and h.get("x-bundle") == "file") or (raw.startswith(b"PK") and h.get("x-bundle") == "zip")
+    check(st == 200 and "attachment" in h.get("content-disposition", "") and shape_ok and "x-fidelity" in h,
+          f"convert to claude-code: download with fidelity header ({len(raw):,} B, bundle {h.get('x-bundle')})")
     check("x-target-relpath" in h and h["x-target-relpath"].endswith(".jsonl") and "x-target-home" in h, "conversion says where the file belongs under the target home")
     st, h, raw = c.post("/api/export", {**key, "opts": base, "format": "native", "convert": "codex", "mode": "folder"})
     j = json.loads(raw)
@@ -296,7 +300,7 @@ def main() -> int:
     check(st == 200 and j.get("folded_for") == "codex" and Path(j["path"]).suffix == ".md" and Path(j["report_path"]).exists(),
           "a folded export in folder mode writes the file and its report")
     st, mx = c.get("/api/convert-matrix")
-    check(st == 200 and len(mx["carry"]) >= 10 and set(mx["targets"]) == {"claude-code", "codex", "gemini-cli"} and "disclaimer" in mx, "conversion matrix lists elements, targets and a disclaimer")
+    check(st == 200 and len(mx["carry"]) >= 10 and set(mx["targets"]) == {"claude-code", "codex", "gemini-cli", "cline"} and "disclaimer" in mx, "conversion matrix lists elements, targets and a disclaimer")
 
     # --- the pair decides: same agent in and out is a copy, so nothing is lost -------------
     st, same = c.get("/api/convert-matrix?source=claude-code&target=claude-code")
@@ -367,13 +371,13 @@ def main() -> int:
     check(sv["view"]["table"]["columns"] == ["blocks", "share"] and sv["view"]["mode"] == "brief",
           "retired table columns are dropped instead of rejected, and the context mode is stored")
     st, h, raw = c.post("/api/settings", {"settings": {"view": {"mode": "sideways"}}})
-    check(st == 500 and "mode" in json.loads(raw).get("error", ""), "an unknown context mode is rejected")
+    check(st == 400 and "mode" in json.loads(raw).get("error", ""), "an unknown context mode is rejected")
 
     check(Path(os.environ["ECTYPE_CONFIG"]).exists(), "settings file written to ECTYPE_CONFIG")
     st, sessions2 = c.get("/api/sessions")
     check(all(x["agent"] != s["agent"] for x in sessions2), "a disabled agent is gone from /api/sessions")
     st, h, raw = c.post("/api/settings", {"settings": {"export": {"mode": "sideways"}}})
-    check(st == 500 and "mode" in json.loads(raw).get("error", ""), "invalid settings are rejected with a message")
+    check(st == 400 and "mode" in json.loads(raw).get("error", ""), "invalid settings are rejected with a message")
     new["agents"][s["agent"]] = {"enabled": True, "home": None}
     c.post("/api/settings", {"settings": new})
     st, sessions3 = c.get("/api/sessions")
@@ -381,7 +385,7 @@ def main() -> int:
     st, h, raw = c.post("/api/settings", {"settings": {"view": {"context_window": 123456}}})
     check(st == 200 and json.loads(raw)["settings"]["view"]["reference"] == 123456, "legacy view.context_window is accepted as reference")
     st, h, raw = c.post("/api/settings", {"settings": {"notice": {"items": ["nonsense"]}}})
-    check(st == 500 and "nonsense" in json.loads(raw).get("error", ""), "unknown notice item is rejected")
+    check(st == 400 and "nonsense" in json.loads(raw).get("error", ""), "unknown notice item is rejected")
     # NB: a POST replaces the whole document, so these partial posts reset everything else; keep
     # them after the checks that depend on saved state.
     st, h, raw = c.post("/api/settings", {"settings": {"view": {"table": {"columns": ["blocks", "full", "removed"]}}}})

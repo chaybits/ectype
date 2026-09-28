@@ -23,6 +23,10 @@ class FidelityReport:
     dropped: Counter = field(default_factory=Counter)   # thinking, env, system, info, error, image
     merged: int = 0                                     # consecutive same-role messages merged
     notes: list[str] = field(default_factory=list)
+    # the id the written session carries, set by every writer and by the native copy. The file
+    # name is not it: a Codex rollout is `rollout-<time>-<uuid>.jsonl`, and a caller that took the
+    # file's stem for the id asked Codex to resume a file name.
+    new_id: str | None = None
 
     def render(self) -> str:
         def row(c: Counter) -> str:
@@ -82,7 +86,10 @@ def flatten(s: Session, rep: FidelityReport, banner: bool = True, excerpt: int =
                 if len(t) > excerpt:
                     t = t[:excerpt] + f"... (+{len(b.text) - excerpt:,} chars)"
                 flag = " ERROR" if b.is_error else ""
-                parts.append(f"[tool result{flag}: {t}]" if t else f"[tool result{flag}: (empty)]")
+                if b.meta.get("brief") is not None:        # a names-only view hid it; it was not empty
+                    parts.append(f"[tool result{flag}: not included in this view]")
+                else:
+                    parts.append(f"[tool result{flag}: {t}]" if t else f"[tool result{flag}: (empty)]")
                 rep.folded["tool_result"] += 1
             elif b.kind in ("system", "info", "error"):
                 rep.dropped[b.kind] += 1

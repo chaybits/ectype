@@ -30,6 +30,7 @@ LEGACY_COLUMNS = {"full", "removed", "tokens"}              # v0.2 names; tokens
 MODES = ("brief", "custom", "full")                         # how much of a tool result to include
 STAMPS = ("full", "time", "none")                           # per-message timestamp: 18 / 11 / 5 tokens
 WRAP_ROLES = ("", "user", "system", "assistant")            # emit the transcript as one message of this role
+HIDE_ROLES = ("user", "assistant")                          # the sides a view can leave out (the toolbar's two checkboxes)
 NOTICE_ITEMS = ("paths", "time", "os", "tools", "state")                     # see ectype/notice.py
 REDACT_RULES = ("home", "media", "username", "hostname", "email", "keys", "ip")
 
@@ -49,6 +50,9 @@ DEFAULTS: dict = {
         "thinking": False,
         "tools": True,
         "env": False,
+        "notices": False,           # the agent's own notices (API errors, refusals, away summaries), where the store keeps them
+        "questions": True,          # a question the agent put to you, and your answer, shown as the turns they are
+        "peers": True,              # messages other sessions sent in (Claude Code's peer messages), under their own label
         "table": {"columns": ["blocks", "remaining", "share"], "hide_empty": True},
         # the session list, as a file manager shows one: which columns, and how it is sorted
         "list": {"columns": ["name", "agent", "modified", "size"], "sort": "modified", "desc": True},
@@ -70,9 +74,45 @@ DEFAULTS: dict = {
         "items": list(NOTICE_ITEMS),
     },
     "convert": {"warned": False},   # the one-time conversion warning has been shown
+    "gui": {
+        "port": 8765,               # `ectype gui` listens here unless --port says otherwise; the host is always 127.0.0.1
+    },
+    "backup": {                     # ectype backup, and the copies an install takes by itself
+        "keep_last": 0,             # keep at most this many backup folders (0 = all of them)
+        "keep_days": 0,             # delete backup folders older than this many days (0 = never)
+    },
+    "skill": {                      # how `ectype recall` (the /ectype slash command) brings a session in: every view option, its own defaults
+        "command": "ectype",        # the slash command's name: /ectype, or whatever `ectype skill install` wrote
+        "mode": "brief",            # brief | custom | full: the tool-output mode, once tool calls are on
+        "cap": 150,                 # tokens per tool result in custom mode
+        "thinking": False,
+        "tools": False,             # tool calls and results at all; off = the conversation alone (the user, 2026-09-27)
+        "env": False,               # injected system/environment messages
+        "notices": False,           # the agent's own notices
+        "questions": True,          # questions put to the user, and the answers, as turns
+        "peers": True,              # messages other sessions sent in
+        "collapse": True,           # merge back-to-back turns of the same actor
+        "wrap": "",                 # "", or a role: the whole transcript as one message of it
+        "stamps": "full",           # per-message timestamp: full | time | none
+        "markers": True,            # the [USER] / [ASSISTANT] lines
+        "tool_headers": False,      # a tool turn's own [TOOL] line
+        "hide_roles": [],           # "user" and/or "assistant": leave that side's turns out
+        "redact": False,            # apply Settings -> Redaction to what is brought in
+        "notice": False,            # append the import notice
+        "summarize": True,          # also save the session's summary into ectype's own store (ledger)
+    },
+    "summary": {                    # ectype summarize, and the summaries kept for search (ectype/summary.py)
+        # an agent's closing summary is the text it wrote between two of one of these, in one of its
+        # own turns: literal strings, several allowed, an empty list switches the section off. The
+        # default holds no character Markdown gives a meaning to, so a rendered reply shows the marker
+        # as written; `-*-summary-*-`, the default until 2026-09-27, showed as `--summary--` because
+        # its asterisks became italics (ARCHITECTURE D24)
+        "markers": ["%%SUMMARY%%"],
+    },
 }
 
 _cache: dict | None = None
+_STAMP: tuple | None = None      # (path, mtime_ns, size) of the file the cache was read from
 _LOAD_ERROR: str | None = None   # set when the file exists but could not be read as settings
 _LOCK = threading.RLock()        # load() and save() are called from the web server's request threads
 
@@ -80,8 +120,7 @@ _LOCK = threading.RLock()        # load() and save() are called from the web ser
 def load_error() -> str | None:
     """Why the settings file was ignored, or None. A file that fails to parse is NOT treated as
     absent in silence: the defaults apply, this says so, and `save()` keeps the broken file."""
-    if _cache is None:
-        load()
+    load()                      # stamp-aware: a file broken after start-up is noticed here too
     return _LOAD_ERROR
 
 
@@ -118,12 +157,26 @@ def _merge(base: dict, over: dict) -> dict:
     return out
 
 
+def _file_stamp() -> tuple:
+    p = config_path()
+    try:
+        st = p.stat()
+        return (str(p), st.st_mtime_ns, st.st_size)
+    except OSError:
+        return (str(p), None, None)
+
+
 def load(fresh: bool = False) -> dict:
-    """Settings merged over DEFAULTS. Cached; `fresh=True` re-reads the file."""
-    global _cache, _LOAD_ERROR
+    """Settings merged over DEFAULTS. Cached, and re-read when the file changed on disk (or
+    `fresh=True`): the GUI is one long-lived process, and a cache that never looked again made a
+    hand edit or an `ectype skill install --name` invisible to it, then overwrote them with the next
+    small save, and bypassed the `.bad-<stamp>` protection for a file broken after start-up."""
+    global _cache, _LOAD_ERROR, _STAMP
     with _LOCK:
-        if _cache is not None and not fresh:
+        stamp = _file_stamp()
+        if _cache is not None and not fresh and stamp == _STAMP:
             return copy.deepcopy(_cache)
+        _STAMP = stamp
         data: dict = {}
         p = config_path()
         _LOAD_ERROR = None
@@ -205,7 +258,7 @@ def validate(data: dict) -> dict:
         raise ValueError("view must be an object")
     if "reference" not in view and "context_window" in view:
         view = {**view, "reference": view["context_window"]}
-    for key in ("color_roles", "thinking", "tools", "env", "tool_headers", "markers", "collapse"):
+    for key in ("color_roles", "thinking", "tools", "env", "notices", "questions", "peers", "tool_headers", "markers", "collapse"):
         if key in view:
             out["view"][key] = _bool("view", key, view[key])
     if "stamps" in view:
@@ -287,6 +340,63 @@ def validate(data: dict) -> dict:
         raise ValueError("convert must be an object")
     if "warned" in conv:
         out["convert"]["warned"] = _bool("convert", "warned", conv["warned"])
+
+    gui = data.get("gui") or {}
+    if not isinstance(gui, dict):
+        raise ValueError("gui must be an object")
+    if "port" in gui:
+        port = _int("gui", "port", gui["port"], 1)
+        if port > 65535:
+            raise ValueError("gui.port must be between 1 and 65535")
+        out["gui"]["port"] = port
+
+    bk = data.get("backup") or {}
+    if not isinstance(bk, dict):
+        raise ValueError("backup must be an object")
+    for key in ("keep_last", "keep_days"):
+        if key in bk:
+            out["backup"][key] = _int("backup", key, bk[key], 0)
+
+    skill = data.get("skill") or {}
+    if not isinstance(skill, dict):
+        raise ValueError("skill must be an object")
+    if "command" in skill:
+        from .skill import valid_name
+        out["skill"]["command"] = valid_name(skill["command"])
+    if "mode" in skill:
+        if skill["mode"] not in MODES:
+            raise ValueError(f"skill.mode must be one of {', '.join(MODES)}")
+        out["skill"]["mode"] = skill["mode"]
+    if "cap" in skill:
+        out["skill"]["cap"] = _int("skill", "cap", skill["cap"], 0)
+    for key in ("thinking", "tools", "env", "notices", "questions", "peers", "collapse", "markers", "tool_headers",
+                "redact", "notice", "summarize"):
+        if key in skill:
+            out["skill"][key] = _bool("skill", key, skill[key])
+    if "stamps" in skill:
+        if skill["stamps"] not in STAMPS:
+            raise ValueError(f"skill.stamps must be one of {', '.join(STAMPS)}")
+        out["skill"]["stamps"] = skill["stamps"]
+    if "wrap" in skill:
+        if skill["wrap"] not in WRAP_ROLES:
+            raise ValueError(f"skill.wrap must be empty or one of {', '.join(r for r in WRAP_ROLES if r)}")
+        out["skill"]["wrap"] = skill["wrap"]
+    if "hide_roles" in skill:
+        out["skill"]["hide_roles"] = _strlist("skill", "hide_roles", skill["hide_roles"], HIDE_ROLES)
+
+    summ = data.get("summary") or {}
+    if not isinstance(summ, dict):
+        raise ValueError("summary must be an object")
+    if "markers" in summ:
+        v = summ["markers"]
+        if not isinstance(v, list) or not all(isinstance(x, str) for x in v):
+            raise ValueError("summary.markers must be a list of strings")
+        marks: list[str] = []
+        for x in v:                 # trimmed, no blanks, no duplicates; the order is kept
+            x = x.strip()
+            if x and x not in marks:
+                marks.append(x)
+        out["summary"]["markers"] = marks
     return out
 
 
@@ -301,8 +411,7 @@ def save(data: dict) -> dict:
         v = validate(data)
         p = config_path()
         p.parent.mkdir(parents=True, exist_ok=True)
-        if _cache is None:
-            load()
+        load()                                   # cheap when unchanged; recomputes _LOAD_ERROR when the file moved
         if _LOAD_ERROR and p.exists():
             bad = p.with_name(p.name + f".bad-{datetime.now():%Y%m%d-%H%M%S}")
             p.replace(bad)
@@ -312,7 +421,17 @@ def save(data: dict) -> dict:
         os.replace(tmp, p)
         _cache = v
         _LOAD_ERROR = None
+        global _STAMP
+        _STAMP = _file_stamp()
         return copy.deepcopy(v)
+
+
+def patch(section_values: dict) -> dict:
+    """Save a partial document merged over the settings as they are on disk NOW. The page's small
+    saves (the list's sort and columns, a dialog's options) use this: posting the whole document the
+    page loaded at start-up erased whatever changed on disk since (audit 2026-09-25, F55)."""
+    with _LOCK:
+        return save(_merge(load(fresh=True), section_values))
 
 
 def _agents() -> dict:

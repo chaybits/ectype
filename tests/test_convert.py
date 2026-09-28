@@ -21,7 +21,7 @@ from ectype import adapters                       # noqa: E402
 from ectype.convert import WRITERS, convert       # noqa: E402
 from ectype.transform import Redactor             # noqa: E402
 
-ENV = {"claude-code": "ECTYPE_CLAUDE_HOME", "codex": "CODEX_HOME", "gemini-cli": "ECTYPE_GEMINI_HOME"}
+ENV = {"claude-code": "ECTYPE_CLAUDE_HOME", "codex": "CODEX_HOME", "gemini-cli": "ECTYPE_GEMINI_HOME", "cline": "ECTYPE_CLINE_HOME"}
 
 
 def main() -> int:

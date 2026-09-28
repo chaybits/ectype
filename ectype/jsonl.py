@@ -3,7 +3,8 @@
 Five adapters and the converter each had their own loop, and each chose its own encoding and error
 policy; one read strict `utf-8`, so a BOM made it drop the first record without a word. This is the
 one place that decides: `utf-8-sig` (a Windows-written file may carry a BOM), blank lines skipped, an
-unparseable line COUNTED rather than passed over, so a caller can say "n lines could not be read"
+unparseable line, or one that is valid JSON but not an object, COUNTED rather than passed over, so a
+caller can say "n lines could not be read"
 instead of presenting a shorter session as if it were whole.
 """
 from __future__ import annotations
@@ -30,10 +31,18 @@ def iter_jsonl(path: Path, skipped: list[int] | None = None) -> Iterator[tuple[i
                 if not line.strip():
                     continue
                 try:
-                    yield i, json.loads(line)
+                    rec = json.loads(line)
                 except json.JSONDecodeError:
                     if skipped is not None:
                         skipped.append(i)
+                    continue
+                if not isinstance(rec, dict):
+                    # valid JSON that is not a record (a bare number, string or list): every caller
+                    # calls .get on what comes out of here, so it counts as a line that could not be read
+                    if skipped is not None:
+                        skipped.append(i)
+                    continue
+                yield i, rec
         except UnicodeDecodeError as e:
             raise ValueError(f"{path}: not valid UTF-8 near line {i + 1}: {e}") from e
 

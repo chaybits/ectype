@@ -99,11 +99,15 @@ def test_ceiling_follows_the_content() -> None:
     first = budget.everything(small)["tokens"]
     grown = session([Message(0, "user", TS, [ContentBlock("text", "short")]),
                      Message(1, "assistant", TS, [ContentBlock("text", "a much longer reply " * 200)])])
-    check(budget.everything(grown)["tokens"] == first,
-          "the ceiling is cached (unchanged without an explicit invalidate)")
+    check(budget.everything(small) is budget.everything(small),
+          "the ceiling is cached (the same session twice is one measurement)")
+    # third audit, F12: the entry validates itself (file stamp, message count, header fields), so the
+    # long-lived MCP server, which never calls invalidate(), no longer reports a stale ceiling
+    check(budget.everything(grown)["tokens"] > first,
+          "a grown session is measured again without an explicit invalidate")
     budget.invalidate(grown.agent, grown.id)
     check(budget.everything(grown)["tokens"] > first,
-          "after invalidate() the ceiling reflects the grown session")
+          "after invalidate() the ceiling still reflects the grown session")
 
     budget.invalidate()
     for i in range(budget._FULL_MAX + 20):      # the GUI is long-lived; the cache must not grow forever

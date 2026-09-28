@@ -69,7 +69,8 @@ class CursorAdapter(Adapter):
                 continue
             title = None
             try:
-                title = (json.loads(value) or {}).get("name")
+                head = json.loads(value)
+                title = head.get("name") if isinstance(head, dict) else None
             except (TypeError, ValueError):
                 pass
             if not title:
@@ -82,34 +83,42 @@ class CursorAdapter(Adapter):
         """Export just this conversation into a temporary single-composer state.vscdb."""
         tmp = scratch_dir("ectype-cursor-") / "state.vscdb"
         src = self._connect()
-        dst = sqlite3.connect(tmp)
-        dst.execute("create table ItemTable (key text primary key, value blob)")
-        dst.execute("create table cursorDiskKV (key text primary key, value blob)")
-        cols = [c[1] for c in src.execute("pragma table_info(composerHeaders)")]
-        dst.execute(f"create table composerHeaders ({', '.join(cols)})")
-        for row in src.execute("select * from composerHeaders where composerId=?", (ref.id,)):
-            dst.execute(f"insert into composerHeaders values ({','.join('?' * len(cols))})", row)
-        for k, v in src.execute("select key, value from cursorDiskKV where key=? or key like ? or key like ?",
-                                (f"composerData:{ref.id}", f"bubbleId:{ref.id}:%", f"checkpointId:{ref.id}:%")):
-            dst.execute("insert into cursorDiskKV values (?, ?)", (k, v))
-        dst.commit(); dst.close(); src.close()
+        try:
+            dst = sqlite3.connect(tmp)
+            try:
+                dst.execute("create table ItemTable (key text primary key, value blob)")
+                dst.execute("create table cursorDiskKV (key text primary key, value blob)")
+                cols = [c[1] for c in src.execute("pragma table_info(composerHeaders)")]
+                dst.execute(f"create table composerHeaders ({', '.join(cols)})")
+                for row in src.execute("select * from composerHeaders where composerId=?", (ref.id,)):
+                    dst.execute(f"insert into composerHeaders values ({','.join('?' * len(cols))})", row)
+                for k, v in src.execute("select key, value from cursorDiskKV where key=? or key like ? or key like ?",
+                                        (f"composerData:{ref.id}", f"bubbleId:{ref.id}:%", f"checkpointId:{ref.id}:%")):
+                    dst.execute("insert into cursorDiskKV values (?, ?)", (k, v))
+                dst.commit()
+            finally:
+                dst.close()                          # on the failure path too
+        finally:
+            src.close()
         return [(tmp, "state.vscdb")]
 
     def load(self, ref: SessionRef) -> Session:
         con = self._connect()
-        row = con.execute("select value from cursorDiskKV where key=?", (f"composerData:{ref.id}",)).fetchone()
-        data = json.loads(row[0]) if row else {}
-        order = [h.get("bubbleId") if isinstance(h, dict) else h for h in data.get("fullConversationHeadersOnly") or []]
-        if not order:                                     # fallback: every bubble of this composer, by time
-            order = [k.split(":", 2)[2] for (k,) in con.execute(
-                "select key from cursorDiskKV where key like ?", (f"bubbleId:{ref.id}:%",))]
-        # every bubble of this composer in ONE query, then put back into `order`. A query per
-        # bubble meant hundreds of index lookups into a database that is hundreds of megabytes.
-        raw: dict[str, object] = {}
-        for k, v in con.execute("select key, value from cursorDiskKV where key like ?",
-                                (f"bubbleId:{ref.id}:%",)):
-            raw[k.split(":", 2)[2]] = v
-        con.close()
+        try:
+            row = con.execute("select value from cursorDiskKV where key=?", (f"composerData:{ref.id}",)).fetchone()
+            data = json.loads(row[0]) if row else {}
+            order = [h.get("bubbleId") if isinstance(h, dict) else h for h in data.get("fullConversationHeadersOnly") or []]
+            if not order:                                 # fallback: every bubble of this composer, by time
+                order = [k.split(":", 2)[2] for (k,) in con.execute(
+                    "select key from cursorDiskKV where key like ?", (f"bubbleId:{ref.id}:%",))]
+            # every bubble of this composer in ONE query, then put back into `order`. A query per
+            # bubble meant hundreds of index lookups into a database that is hundreds of megabytes.
+            raw: dict[str, object] = {}
+            for k, v in con.execute("select key, value from cursorDiskKV where key like ?",
+                                    (f"bubbleId:{ref.id}:%",)):
+                raw[k.split(":", 2)[2]] = v
+        finally:
+            con.close()                                   # a corrupt row must not leak the handle
         bubbles = []
         for bid in order:
             v = raw.get(bid)

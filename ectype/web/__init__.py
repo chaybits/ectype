@@ -7,6 +7,9 @@ Endpoints (JSON unless noted):
   GET  /api/sessions                   SessionRefs of the ENABLED agents, newest first
   GET  /api/settings                   settings + config-file path + the option catalogues the page needs
   POST /api/settings {settings}        validate, save, apply
+  GET  /api/summarize?agent=&id=[&path=]
+                                       {text, closing, markers}: `ectype summarize` of the whole session,
+                                       how many closing-summary blocks it holds, the markers looked for
   GET  /api/convert-matrix?source=&target=
                                        what that PAIR carries / folds / drops (same agent = a copy)
   POST /api/rename   {agent,id[,path],title} -> {where}: "native" when the agent's own store
@@ -28,8 +31,14 @@ Endpoints (JSON unless noted):
                                        workspace = the cwd the installed copy belongs to
                                        convert + a generic format: the conversation folded exactly as
                                        the conversion folds it, written as text/markdown/… (X-Folded-For)
-opts: mode (brief|custom|full), thinking, tools, env, hide_roles[], start, end, collapse,
-      stamps, wrap, tool_headers, markers, redact, redact_rules{}, redact_terms[], notice
+  GET  /api/skill?name=               the slash command's three files: path and state (ours / stale /
+                                       edited / foreign / absent)
+  POST /api/skill {action,name[,force]} install or remove them; force replaces an edited one (kept as .bak)
+  GET  /api/summary-rule               the closing-summary paragraph and each agent's instruction file's state
+  POST /api/summary-rule {action,agents[],files[][,force]}
+                                       write or take out the paragraph in the files picked (never by default)
+opts: mode (brief|custom|full), thinking, tools, env, notices, questions, peers, hide_roles[], start,
+      end, collapse, stamps, wrap, tool_headers, markers, redact, redact_rules{}, redact_terms[], notice
 """
 from __future__ import annotations
 
@@ -47,7 +56,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, quote, urlparse
 
-from .. import adapters, budget, convert as conv, notice, settings
+from .. import __version__, adapters, budget, convert as conv, notice, settings
 from ..model import json_default as _default
 from ..render import formats
 from ..render.text import footer, render
@@ -122,8 +131,12 @@ def _ref(agent: str, sid: str, path: str | None = None):
     if path:
         refs = [r for r in refs if str(r.path) == path] or refs
     if not refs:
-        raise KeyError(f"{agent}:{sid}")
+        raise SessionNotFound(f"no {agent} session {sid!r}")
     return refs[0]
+
+
+class SessionNotFound(LookupError):
+    """The (agent, id) a request named is not in the store: a 404, never a 'missing field' 400."""
 
 
 def _forget(agent: str, sid: str) -> None:
@@ -152,11 +165,12 @@ class Prepared:
         # the cap lives in Settings now; it only bites in `custom` mode
         o = {**o, "cap": cfg["view"]["cap"] if o.get("cap") is None else o.get("cap"),
              # merging back-to-back turns is a filter (it changes the message list), so it must be
-             # decided before the view is built, like the cap
-             "collapse": cfg["view"]["collapse"] if o.get("collapse") is None else bool(o.get("collapse"))}
+             # decided before the view is built, like the cap; so are the two below
+             "collapse": cfg["view"]["collapse"] if o.get("collapse") is None else bool(o.get("collapse")),
+             "questions": cfg["view"]["questions"] if o.get("questions") is None else bool(o.get("questions")),
+             "peers": cfg["view"]["peers"] if o.get("peers") is None else bool(o.get("peers"))}
         self.opts = o
         self.source, self.ref = _load(agent, sid, path)
-        self.view = budget.filtered(self.source, o)
         self.red = None
         if o.get("redact"):
             rc = cfg["redact"]
@@ -164,8 +178,17 @@ class Prepared:
             for k, v in (o.get("redact_rules") or {}).items():       # per-render override of Settings
                 if k in rules:
                     rules[k] = bool(v)
-            self.red = Redactor.defaults(extra=[*rc["terms"], *(o.get("redact_terms") or [])], options=rules)
-            self.view = self.red.session(self.view)
+            terms = [*rc["terms"], *(o.get("redact_terms") or [])]
+            # redact the whole session FIRST, then filter: the cap cut a result at a token boundary
+            # and a name split there matched no rule (third audit, F02). `self.red` counts over the
+            # unredacted view, so the "what was replaced" list describes what the view shows.
+            self.full = Redactor.defaults(extra=terms, options=rules).session(self.source)
+            self.view = budget.filtered(self.full, o)
+            self.red = Redactor.defaults(extra=terms, options=rules)
+            self.red.session(budget.filtered(self.source, o))
+        else:
+            self.full = self.source
+            self.view = budget.filtered(self.source, o)
         self.notice_text = None
         if o.get("notice"):
             self.notice_text = notice.build(self.source, cfg["notice"], adapters.get(agent).label)
@@ -218,7 +241,8 @@ def agent_info() -> list[dict]:
         out.append({"name": name, "label": a.label, "category": a.category, "available": ok,
                     "enabled": a.enabled(), "home": str(a.home()), "home_source": a.home_source(),
                     "default_home": a.default_home, "env_home": a.env_home, "sessions": count, "error": error,
-                    "writable": a.writable, "native_format": a.native_format})
+                    "writable": a.writable, "native_format": a.native_format,
+                    "plugin": adapters.PLUGINS.get(name)})
     return out
 
 
@@ -230,8 +254,10 @@ def workspaces() -> dict[str, list[str]]:
             continue
         try:
             out[name] = a.workspaces()
-        except Exception:                       # noqa: BLE001, a broken store must not break Settings
+        except Exception as e:                  # noqa: BLE001, a broken store must not break Settings, but the reason must be somewhere
             out[name] = []
+            print(f"ectype: {name}: workspaces could not be listed ({type(e).__name__}: {e}); "
+                  f"the picker offers only the folder the session came from", file=sys.stderr)
     return out
 
 
@@ -247,13 +273,47 @@ def catalogues() -> dict:
             "notice_items": [{"key": k, "label": v[0]} for k, v in notice.ITEMS.items()],
             "columns": list(settings.TABLE_COLUMNS),
             "list_columns": list(settings.LIST_COLUMNS),
-            "platform": "windows" if os.name == "nt" else ("macos" if sys.platform == "darwin" else "linux")}
+            "platform": "windows" if os.name == "nt" else ("macos" if sys.platform == "darwin" else "linux"),
+            # the page's About section: the portable build's users have no other way to read a version
+            "version": __version__,
+            "backups": _backups_info()}
+
+
+def _summary_rule_info() -> dict:
+    """Settings → Summary's view of the rule: the paragraph for today's markers, and each agent's
+    instruction file with its state. `text` is empty when Settings lists no marker."""
+    from .. import summary_rule
+    try:
+        text = summary_rule.text()
+    except ValueError:
+        text = ""
+    return {"text": text, "agents": summary_rule.status()}
+
+
+def _backups_info() -> dict:
+    """How many backup folders there are and what they weigh, for Settings → Backups."""
+    from .. import backup as bk
+    rows = bk.listing()
+    return {"count": len(rows), "bytes": sum(r["bytes"] for r in rows), "path": str(bk.root())}
 
 
 def _export_name(raw: str | None, s, fmt: str) -> str:
-    base = _UNSAFE.sub("_", (raw or "").strip()).strip(" .") or f"{s.agent}_{s.id[:8]}"
-    ext = formats.extension(fmt)
-    return base if base.lower().endswith("." + ext) else f"{base}.{ext}"
+    return formats.export_name(raw, s.agent, s.id, fmt)
+
+
+def _origin_ok(origin: str, port: int) -> bool:
+    """An Origin is accepted only when it is THIS server: loopback and the same port. Any loopback
+    origin used to pass, so a page of another local app (SillyTavern, ComfyUI, a dev server) could
+    rewrite Settings with a simple text/plain POST (audit 2026-09-25, F46)."""
+    if not _is_loopback(origin):
+        return False
+    rest = origin.split("//", 1)[-1]
+    if rest.startswith("["):
+        rest = rest[rest.index("]") + 1:] if "]" in rest else ""
+    else:
+        rest = rest[rest.index(":"):] if ":" in rest else ""
+    p = int(rest[1:]) if rest.startswith(":") and rest[1:].isdigit() else 80
+    return p == port
 
 
 _LOOPBACK = {"127.0.0.1", "localhost", "::1", "[::1]"}
@@ -290,17 +350,31 @@ class Handler(BaseHTTPRequestHandler):
                  browser, so it could also READ every transcript. This is the check that stops it.
           Origin must be loopback WHEN PRESENT. Browsers always send it on POST, so a cross-site
                  post is rejected; curl and scripts send none and keep working.
+          Origin, when present, must also be THIS server's port: another local app's page is
+                 loopback too. And a browser's `Sec-Fetch-Site` on an API request must say
+                 same-origin (or none, a typed URL): that also refuses the cross-site no-cors GETs an
+                 <img> or <script> on any page could send.
         """
         if not _is_loopback(self.headers.get("Host")):
             return False
         origin = self.headers.get("Origin")
-        return origin is None or _is_loopback(origin)
+        if origin is not None and not _origin_ok(origin, self.server.server_address[1]):
+            return False
+        site = self.headers.get("Sec-Fetch-Site")
+        if site and site not in ("same-origin", "none") and urlparse(self.path).path.startswith("/api/"):
+            return False
+        return True
 
     def _refuse(self) -> None:
         self._json({"error": "request refused: ectype only answers same-origin requests from "
                              "http://127.0.0.1 (see the Host/Origin guard in ectype/web/__init__.py)"}, 403)
 
     def _send(self, data: bytes, ctype: str, code: int = 200, extra: dict | None = None) -> None:
+        # every header value is checked BEFORE the status line goes out: http.server encodes headers
+        # as strict Latin-1, and a value that failed half-way used to leave a 200 with a 500 spliced
+        # into its headers (two status lines, two Content-Lengths; audit 2026-09-25, F47)
+        for k, v in (extra or {}).items():
+            str(v).encode("latin-1")
         self.send_response(code)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(data)))
@@ -310,7 +384,9 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(data)
 
     def _json(self, obj, code: int = 200) -> None:
-        self._send(json.dumps(obj, ensure_ascii=False, default=_default).encode("utf-8"),
+        # ensure_ascii: a lone surrogate from a transcript travels as its \\u escape, which the page's
+        # JSON.parse accepts; a strict UTF-8 encode of it failed every render of that session (F58)
+        self._send(json.dumps(obj, ensure_ascii=True, default=_default).encode("ascii"),
                    "application/json; charset=utf-8", code)
 
     def _file(self, data: bytes, name: str, mime: str, extra: dict | None = None) -> None:
@@ -337,6 +413,26 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({"settings": settings.load(), "path": str(settings.config_path()),
                             "load_error": settings.load_error(),
                             "export_dir": str(export_dir()), **catalogues()})
+            elif u.path == "/api/skill":
+                from .. import skill
+                name = skill.valid_name(q.get("name") or settings.load()["skill"]["command"])
+                self._json({"name": name, "agents": skill.status(name)})
+            elif u.path == "/api/summary-rule":
+                self._json(_summary_rule_info())
+            elif u.path == "/api/summarize":
+                # the whole session, as `ectype summarize <id>` prints it: the Summary button is a
+                # look at the session, not at the filtered view, so the toolbar options play no part
+                from ..summary import closing_summaries, markers, summarize
+                s, _ref = _load(q["agent"], q["id"], q.get("path") or None)
+                text = summarize(s)
+                if q.get("redact") == "1":
+                    # the Summary shows under the same Redaction switch as the transcript (it used to
+                    # ignore it and put the unredacted asks and paths on screen)
+                    rc = settings.load()["redact"]
+                    terms = [t for t in (q.get("terms") or "").split(",") if t.strip()]
+                    text = Redactor.defaults(extra=[*rc["terms"], *terms],
+                                             options={k: rc[k] for k in settings.REDACT_RULES}).text(text)
+                self._json({"text": text, "closing": len(closing_summaries(s)), "markers": markers()})
             elif u.path == "/api/convert-matrix":
                 # the pair decides: same agent in and out is a copy, so nothing is folded or dropped
                 self._json({**conv.matrix(q.get("source"), q.get("target")),
@@ -344,34 +440,101 @@ class Handler(BaseHTTPRequestHandler):
                             "writable": {n: a.writable for n, a in adapters.ADAPTERS.items()}})
             else:
                 self._json({"error": "not found"}, 404)
+        except SessionNotFound as e:
+            self._json({"error": str(e)}, 404)
+        except _CLIENT_ERRORS as e:
+            self._json({"error": _client_error(e)}, 400)
         except Exception as e:      # noqa: BLE001
             self._json({"error": f"{type(e).__name__}: {e}"}, 500)
+
+    _POSTS = {"/api/settings", "/api/skill", "/api/summary-rule", "/api/rename", "/api/notice", "/api/render", "/api/export"}
 
     def do_POST(self):
         if not self._guard():
             self._refuse()
             return
-        n = int(self.headers.get("Content-Length") or 0)
+        path = urlparse(self.path).path
         try:
+            try:
+                n = int(self.headers.get("Content-Length") or 0)
+            except ValueError:
+                raise ValueError("Content-Length is not a number") from None
+            if n < 0:
+                raise ValueError("Content-Length is negative")
+            if path not in self._POSTS:          # before any work: an unknown path used to build a whole view first
+                self._json({"error": "not found"}, 404)
+                return
             body = json.loads(self.rfile.read(n) or b"{}")
-            if self.path == "/api/settings":
+            if not isinstance(body, dict):
+                raise ValueError("the request body must be a JSON object")
+            if path == "/api/settings" and isinstance(body.get("patch"), dict):
+                # a partial save merged onto the file as it is now (the page's small saves, F55)
+                saved = settings.patch(body["patch"])
+                self._json({"settings": saved, "path": str(settings.config_path()), "export_dir": str(export_dir())})
+                return
+            if path == "/api/settings":
                 data = body.get("settings", body)
-                fmt = (data.get("export") or {}).get("format")
+                ex = data.get("export")
+                fmt = ex.get("format") if isinstance(ex, dict) else None
                 if fmt is not None and fmt not in formats.FORMATS and fmt != "native":
                     raise ValueError(f"export.format must be 'native' or one of {', '.join(formats.FORMATS)}")
                 saved = settings.save(data)
                 self._json({"settings": saved, "path": str(settings.config_path()), "export_dir": str(export_dir())})
                 return
-            if self.path == "/api/rename":
+            if path == "/api/skill":
+                # install / remove the slash command's files under a name; install also makes that
+                # name the one in Settings, so the CLI, the status line and the files agree
+                from .. import skill
+                name = skill.valid_name(body.get("name") or settings.load()["skill"]["command"])
+                agents = body.get("agents") or None
+                if body.get("action") == "install":
+                    written = skill.install(name, agents, force=bool(body.get("force")))
+                    cur = settings.load()
+                    removed_old: list = []
+                    if cur["skill"]["command"] != name:
+                        # a rename: the previous name's untouched files go, as on the command line (F68)
+                        removed_old = [str(p) for p in skill.remove(cur["skill"]["command"], agents)[0]]
+                        cur["skill"]["command"] = name
+                        settings.save(cur)
+                    self._json({"written": [str(p) for p in written], "removed_previous": removed_old,
+                                "name": name, "agents": skill.status(name)})
+                elif body.get("action") == "remove":
+                    removed, kept = skill.remove(name, agents)
+                    self._json({"removed": [str(p) for p in removed], "kept": [str(p) for p in kept], "name": name,
+                                "agents": skill.status(name)})
+                else:
+                    raise ValueError("action must be install or remove")
+                return
+            if path == "/api/summary-rule":
+                # the closing-summary paragraph into the instruction files picked on the page; nothing
+                # is written unless an agent or a file is named, as on the command line
+                from .. import summary_rule
+                files = summary_rule.targets(body.get("agents") or [], body.get("files") or [])
+                if not files:
+                    raise ValueError("pick at least one agent or file to write the rule into")
+                if body.get("action") == "install":
+                    written = summary_rule.install(files, force=bool(body.get("force")))
+                    self._json({**_summary_rule_info(), "written": [str(p) for p in written]})
+                elif body.get("action") == "remove":
+                    removed, kept = summary_rule.remove(files, force=bool(body.get("force")))
+                    self._json({**_summary_rule_info(), "removed": [str(p) for p in removed], "kept": [str(p) for p in kept]})
+                else:
+                    raise ValueError("action must be install or remove")
+                return
+            if path == "/api/rename":
                 # `where` says which tier took it, because the two behave differently: a native
                 # rename shows up in the agent as well, a local one only here.
                 ref = _ref(body["agent"], body["id"], body.get("path"))
                 where = adapters.rename(ref, body.get("title") or "")
                 _forget(body["agent"], body["id"])
-                self._json({"where": where, "title": body.get("title") or "",
-                            "generated": ref.title if not (body.get("title") or "").strip() else None})
+                generated = None
+                if not (body.get("title") or "").strip():
+                    # the title the store falls back to NOW: the ref above was discovered before the
+                    # rename, so its title was the very name being cleared (F48)
+                    generated = _ref(body["agent"], body["id"], body.get("path")).title
+                self._json({"where": where, "title": body.get("title") or "", "generated": generated})
                 return
-            if self.path == "/api/notice":
+            if path == "/api/notice":
                 # the notice exactly as it would be appended, with THIS session's values in it
                 s, _ = _load(body["agent"], body["id"], body.get("path"))
                 cfg = settings.load()["notice"]
@@ -380,7 +543,7 @@ class Handler(BaseHTTPRequestHandler):
                 return
             o = body.get("opts") or {}
             p = Prepared(body["agent"], body["id"], o, body.get("path"))
-            if self.path == "/api/render":
+            if path == "/api/render":
                 shown = p.with_notice()
                 text = render(shown, p.ro, source=p.source, with_footer=False)
                 # p.opts, not the raw request: it carries the cap and the merge flag Settings supplied,
@@ -394,7 +557,7 @@ class Handler(BaseHTTPRequestHandler):
                             "notice_text": p.notice_text,
                             "agent_label": adapters.get(body["agent"]).label,
                             "cwd": p.source.cwd, "writable": adapters.get(body["agent"]).writable})
-            elif self.path == "/api/export":
+            elif path == "/api/export":
                 mode = body.get("mode") or settings.load()["export"]["mode"]
                 fmt = body.get("format") or settings.load()["export"]["format"]
                 target = body.get("convert") or None
@@ -409,7 +572,7 @@ class Handler(BaseHTTPRequestHandler):
                 if fmt not in formats.FORMATS:
                     raise ValueError(f"unknown format {fmt!r}")
                 name = _export_name(body.get("name"), p.view, fmt)
-                data = formats.export(p.with_notice(), fmt, p.ro, source=p.source).encode("utf-8")
+                data = _utf8(formats.export(p.with_notice(), fmt, p.ro, source=p.source))
                 if mode == "folder":
                     out = export_dir() / name
                     out.parent.mkdir(parents=True, exist_ok=True)
@@ -417,9 +580,15 @@ class Handler(BaseHTTPRequestHandler):
                     self._json({"path": str(out.resolve()), "bytes": len(data), "mode": "folder",
                                 "redacted": p.red.report() if p.red else None})
                 else:
-                    self._file(data, name, formats.mime(fmt), {"X-Redacted": p.red.report() if p.red else ""})
-            else:
-                self._json({"error": "not found"}, 404)
+                    self._file(data, name, formats.mime(fmt), {"X-Redacted": quote(p.red.report()) if p.red else ""})
+        except SessionNotFound as e:
+            self._json({"error": str(e)}, 404)
+        except FileExistsError as e:
+            # an install refused on purpose (an edited file, a hand-written rule): a conflict the user
+            # can resolve with "replace", not a server fault; the message says which file and why
+            self._json({"error": str(e), "conflict": True}, 409)
+        except _CLIENT_ERRORS as e:
+            self._json({"error": _client_error(e)}, 400)
         except Exception as e:      # noqa: BLE001
             self._json({"error": f"{type(e).__name__}: {e}"}, 500)
 
@@ -436,7 +605,7 @@ class Handler(BaseHTTPRequestHandler):
         rep = conv.FidelityReport(p.source.agent, target)
         s = conv.folded(p.view, target, rep, notice=p.notice_text)
         name = _export_name(raw_name or f"{p.source.agent}_{p.source.id[:8]}_as_{target}", p.view, fmt)
-        data = formats.export(s, fmt, p.ro, source=p.source).encode("utf-8")
+        data = _utf8(formats.export(s, fmt, p.ro, source=p.source))
         report = rep.render() + (f"redacted: {p.red.report()}\n" if p.red else "")
         if mode == "folder":
             out = export_dir() / name
@@ -449,7 +618,7 @@ class Handler(BaseHTTPRequestHandler):
                         "redacted": p.red.report() if p.red else None})
             return
         self._file(data, name, formats.mime(fmt), {"X-Fidelity": quote(report), "X-Folded-For": target,
-                                                     "X-Redacted": p.red.report() if p.red else ""})
+                                                     "X-Redacted": quote(p.red.report()) if p.red else ""})
 
     def _convert(self, p: Prepared, target: str, mode: str, workspace: str | None = None) -> None:
         """mode: download (a file) · folder (written under the export folder) · install (straight
@@ -462,8 +631,11 @@ class Handler(BaseHTTPRequestHandler):
         red_fn = p.red.text if p.red else None
         native = target == p.source.agent and target in conv.NATIVE
         # native copies the ORIGINAL file, so it needs the unredacted session (real id, cwd and
-        # path); redaction still applies, record by record, inside native_copy.
-        s = p.source if native else p.view
+        # path); redaction still applies, record by record, inside native_copy. A cross-agent
+        # conversion folds the WHOLE session (redacted when the switch is on), as `ectype convert`
+        # does: folding the toolbar's view turned every result into "(empty)" in names-only mode
+        # and let a range or a cap shape what was installed (the 2026-09-26 ideas round).
+        s = p.source if native else p.full
         extra = [(src, rel) for src, rel in adapters.get(p.source.agent).artifacts(p.ref)
                  if src != p.source.path] if native else None
         kw = dict(redact=red_fn, notice=p.notice_text, workspace=workspace,
@@ -473,11 +645,18 @@ class Handler(BaseHTTPRequestHandler):
             with tempfile.TemporaryDirectory(prefix="ectype-install-") as td:
                 path, rep = conv.convert(s, target, Path(td), install=True, **kw)
             report = rep.render() + (f"redacted: {p.red.report()}\n" if p.red else "")
-            rp = export_dir() / f"{path.stem}.fidelity.md"
-            rp.parent.mkdir(parents=True, exist_ok=True)
-            rp.write_text(report, encoding="utf-8")          # never leave side files in a live store
+            rp: Path | None = export_dir() / f"{path.stem}.fidelity.md"
+            warning = None
+            try:
+                rp.parent.mkdir(parents=True, exist_ok=True)
+                rp.write_text(report, encoding="utf-8")      # never leave side files in a live store
+            except OSError as e:
+                # the install already happened: a report that cannot be saved is a warning, never a
+                # failure, or the natural retry installs the session a second time (F60)
+                warning = f"installed, but the report could not be saved under the export folder ({e.strerror or e})"
+                rp = None
             self._json({"path": str(path.resolve()), "bytes": path.stat().st_size, "mode": "install",
-                        "report": report, "report_path": str(rp), "native": native,
+                        "report": report, "report_path": str(rp) if rp else None, "warning": warning, "native": native,
                         "resume": next((n for n in rep.notes if n.startswith("resume with:")), ""),
                         "target_home": str(adapters.get(target).home())})
             return
@@ -494,24 +673,43 @@ class Handler(BaseHTTPRequestHandler):
         with tempfile.TemporaryDirectory(prefix="ectype-convert-") as td:
             path, rep = conv.convert(s, target, Path(td), **kw)
             rel = str(path.relative_to(td))
-            sidecars = any("sidecar file(s) copied" in n for n in rep.notes)
+            files = [f for f in sorted(Path(td).rglob("*")) if f.is_file()]
+            # More than one file means the session is not the transcript alone: spill files the
+            # transcript points at, Cline's metadata and messages files, Codex's index line. A
+            # download of the one file the writer returned left the rest behind (dead pointers, or
+            # a Cline copy with no conversation in it) while the report said "copied".
+            sidecars = len(files) > 1
             if sidecars:
-                # the transcript points at spill files copied beside it; a download of the transcript
-                # alone left every one of those a dead pointer while the report said "copied"
                 import io, zipfile
                 buf = io.BytesIO()
                 with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
-                    for f in sorted(Path(td).rglob("*")):
-                        if f.is_file():
-                            z.write(f, f.relative_to(td).as_posix())
+                    for f in files:
+                        z.write(f, f.relative_to(td).as_posix())
                 data, name, mime = buf.getvalue(), f"{path.stem}.zip", "application/zip"
             else:
-                data, name, mime = path.read_bytes(), path.name, "application/x-ndjson; charset=utf-8"
+                data, name = path.read_bytes(), path.name
+                mime = "application/json; charset=utf-8" if path.suffix == ".json" else "application/x-ndjson; charset=utf-8"
         report = rep.render() + (f"redacted: {p.red.report()}\n" if p.red else "")
         self._file(data, name, mime, {
             "X-Fidelity": quote(report), "X-Target-Relpath": quote(rel), "X-Native": "1" if native else "0",
             "X-Bundle": "zip" if sidecars else "file",
             "X-Target-Home": quote(str(adapters.get(target).home()))})
+
+
+_CLIENT_ERRORS = (KeyError, ValueError, TypeError, json.JSONDecodeError)
+
+
+def _client_error(e: Exception) -> str:
+    """A request the client got wrong is a 400 that names the problem, not a 500 with a traceback name."""
+    if isinstance(e, KeyError):
+        return f"missing field {e.args[0]!r} in the request"
+    return f"{type(e).__name__}: {e}"
+
+
+def _utf8(text: str) -> bytes:
+    """UTF-8 for the wire, a lone surrogate (half an emoji a JavaScript agent cut) as U+FFFD instead
+    of an error that failed every export of that session (F58)."""
+    return text.encode("utf-8", "surrogatepass").decode("utf-8", "replace").encode("utf-8")
 
 
 def make_server(port: int = 8765) -> ThreadingHTTPServer:

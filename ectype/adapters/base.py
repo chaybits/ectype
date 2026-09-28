@@ -13,6 +13,9 @@ from .. import settings
 from ..model import Session, SessionRef
 
 CATEGORIES = {"coding": "coding agent", "chat": "chat app"}
+# The list view's title column: a title longer than this is cut once, here, the same for every
+# adapter (it used to be a bare `[:80]` in nine places). Plug-ins are welcome to use it too.
+TITLE_CHARS = 80
 
 
 def app_config_dir(app: str, sub: str = "User") -> str:
@@ -34,6 +37,27 @@ def scratch_dir(prefix: str) -> Path:
     return d
 
 
+def mark_questions(s: Session, names) -> None:
+    """Flag every call to one of `names` (`meta["question"]`) and the result that answers it
+    (`meta["answer"]`), paired by call id, in place.
+
+    A question tool's result is the user's own reply, typed or picked from the options; as tool traffic
+    it vanished from every view that leaves tools out, which is where a reader most needs the user's
+    decisions. The flags are all a view needs to show the pair as an exchange (`transform`); a result
+    whose call id matches no marked call is left alone."""
+    if not names:
+        return
+    asked: set = set()
+    for m in s.messages:
+        for b in m.blocks:
+            if b.kind == "tool_call" and b.name in names:
+                b.meta = {**b.meta, "question": True}
+                if b.call_id:
+                    asked.add(b.call_id)
+            elif b.kind == "tool_result" and b.call_id and b.call_id in asked:
+                b.meta = {**b.meta, "answer": True}
+
+
 class Adapter(ABC):
     name: str                 # machine id, e.g. "claude-code"
     label: str                # human label, e.g. "Claude Code"
@@ -42,6 +66,12 @@ class Adapter(ABC):
     category: str = "coding"  # "coding" agents are shown by default; "chat" apps are opt-in in Settings
     writable: bool = False    # a converter can write this agent's format so it can be RESUMED
     native_format: str | None = None  # human name of that resumable format, e.g. "Claude Code .jsonl"
+    # The agent's tools that put a question to the USER and hand back the user's answer (Claude Code's
+    # AskUserQuestion, Gemini CLI's ask_user, Codex's request_user_input, Cline's ask_followup_question).
+    # `adapters.load()` marks their calls and results (`mark_questions`), so a view can show them as the
+    # question and the answer they are rather than as tool traffic (`transform.Filter.questions`). The
+    # names are vendor vocabulary, so they live here (D1). Optional for a plug-in; empty = none.
+    question_tools: frozenset[str] = frozenset()
 
     def _home_raw(self) -> tuple[str, str]:
         """(path as written, where it came from): env var > settings file > adapter default."""

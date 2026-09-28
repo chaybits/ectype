@@ -28,6 +28,7 @@ class CodexAdapter(Adapter):
     default_home = "~/.codex"
     writable = True
     native_format = "Codex rollout .jsonl"
+    question_tools = frozenset({"request_user_input"})  # the TUI's question pane; its answer comes back as JSON
 
     def _sessions_dir(self) -> Path:
         return self.home() / "sessions"
@@ -62,6 +63,19 @@ class CodexAdapter(Adapter):
                     pass
         return out
 
+    @staticmethod
+    def _peek_project(f: Path) -> str | None:
+        """The basename of the cwd in the `session_meta` header, the file's first line: one
+        `readline()` per rollout, so the list's project column is filled at the cost `workspaces()`
+        already pays."""
+        try:
+            with open(f, encoding="utf-8-sig") as fh:
+                rec = json.loads(fh.readline() or "{}")
+        except (OSError, ValueError):
+            return None
+        cwd = (rec.get("payload") or {}).get("cwd") if isinstance(rec, dict) else None
+        return Path(cwd).name if cwd else None
+
     def discover(self) -> list[SessionRef]:
         titles = self._titles()
         out = []
@@ -72,7 +86,7 @@ class CodexAdapter(Adapter):
             sid = m.group(1)
             st = f.stat()
             out.append(SessionRef(self.name, sid, f, datetime.fromtimestamp(st.st_mtime, tz=timezone.utc),
-                                  st.st_size, title=titles.get(sid)))
+                                  st.st_size, project=self._peek_project(f), title=titles.get(sid)))
         return out
 
     def artifacts(self, ref: SessionRef) -> list[tuple[Path, str]]:
@@ -91,7 +105,9 @@ class CodexAdapter(Adapter):
         full_outputs: list[dict] = []
         bad: list[int] = []
         for _, rec in iter_jsonl(ref.path, bad):
-            t, p = rec.get("type"), rec.get("payload") or {}
+            t, p = rec.get("type"), rec.get("payload")
+            if not isinstance(p, dict):           # a record of an unexpected shape is skipped, not fatal
+                p = {}
             ts = parse_ts(rec.get("timestamp"))
             if t == "session_meta":
                 cwd, version = p.get("cwd"), p.get("cli_version")
@@ -112,7 +128,7 @@ class CodexAdapter(Adapter):
                         break
                 continue
             if t == "event_msg" and p.get("type") == "item_completed":
-                item = p.get("item") or {}
+                item = p.get("item") if isinstance(p.get("item"), dict) else {}
                 if item.get("type") == "CommandExecution":
                     full_outputs.append({"command": item.get("command"), "exit_code": item.get("exit_code"),
                                          "output": item.get("aggregated_output") or item.get("stdout") or ""})
@@ -171,8 +187,11 @@ class CodexAdapter(Adapter):
                     break
                 b.meta["exit_code"] = item["exit_code"]
                 if len(item["output"]) > len(b.text):
-                    b.truncated = True
-                    b.meta["full_output"] = item["output"]
+                    # D10, as for every other adapter: the full text replaces the stub, so brief mode and
+                    # the cap apply to it. It used to sit in meta["full_output"], which no filter touches,
+                    # and every names-only json export carried each truncated command's whole output.
+                    b.meta["restored_from_output"] = len(item["output"]) - len(b.text)
+                    b.text = item["output"]
                 if item["exit_code"] not in (0, None):
                     b.is_error = True
         return Session(self.name, ref.id, ref.path, msgs, title=ref.title, project=Path(cwd).name if cwd else None,

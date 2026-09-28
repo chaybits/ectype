@@ -57,8 +57,13 @@ def _clip(text: str, cap: int) -> str:
 
 
 def _clip_chars(text: str, cap: int) -> str:
+    """Cut at `cap` characters, and only when that saves tokens: an argument of 201-215 characters
+    once cost MORE clipped than whole (the marker is longer than what it removes), which let a
+    custom view count more than *max context* (D6). The cap's own guard in `transform` is the same."""
     if cap and len(text) > cap:
-        return text[:cap].rstrip() + f" …[+{len(text) - cap:,} chars]"
+        clipped = text[:cap].rstrip() + f" …[+{len(text) - cap:,} chars]"
+        if tokens.count(clipped) < tokens.count(text):
+            return clipped
     return text
 
 
@@ -98,6 +103,8 @@ def _result_flags(b: ContentBlock) -> list[str]:
         flags.append("truncated by agent")
     if b.meta.get("restored_from_spill"):
         flags.append("full output restored from the agent's spill file")
+    elif b.meta.get("restored_from_output"):
+        flags.append("full output restored from the agent's command record")
     elif b.spill_path:
         flags.append(f"full: {b.spill_path}")
     if b.meta.get("inferred"):
@@ -162,7 +169,11 @@ def render_message(m: Message, o: RenderOptions, prev_model: str | None = None,
     if not o.markers or (m.role == "tool" and not headed):
         return "\n".join(parts)
     stamp = _fmt(m.timestamp, o.local_time, style=o.stamps)
-    head = f"[{m.role.upper()}]" + (f" {stamp}" if stamp else "")
+    head = f"[{label(m).upper()}]" + (f" {stamp}" if stamp else "")
+    peer = m.meta.get("peer")
+    if isinstance(peer, dict):
+        # who sent it: the reader must never take another session's words for the user's
+        head += ("  " if stamp else " ") + "from " + (peer.get("name") or (peer.get("from") or "")[:8] or "another session")
     if m.meta.get("wrapped"):
         head += f"  (the whole transcript as one message: {m.meta['wrapped']:,} turns)"
     if m.model and m.role == "assistant" and m.model != prev_model:
@@ -170,29 +181,76 @@ def render_message(m: Message, o: RenderOptions, prev_model: str | None = None,
     return head + "\n" + "\n".join(parts)
 
 
-def header(s: Session, o: RenderOptions, source: Session | None = None) -> list[str]:
-    """Header lines. `source` is the unfiltered session, so the counts describe the whole
-    session even when `s` is a filtered view.
+def label(m: Message) -> str:
+    """The actor a turn is printed under: its role, or `peer` for a message another session sent."""
+    return "peer" if m.meta.get("peer") else m.role
+
+
+_LABELS = ("user", "assistant", "peer", "tool", "system")
+
+
+def _turns(s: Session, o: RenderOptions) -> tuple[list[str], dict]:
+    """The rendered turns, and what they hold: the turns by the label printed over them, and the tool
+    calls and thinking blocks actually printed. One loop for both, so the counts cannot disagree with
+    the text they describe."""
+    body: list[str] = []
+    labels: dict[str, int] = {}
+    calls = thinking = 0
+    prev_model = None
+    above = None                          # the actor of the last headed turn: a tool turn continues only an assistant or tool turn
+    for m in s.messages:
+        # a tool turn continues the ASSISTANT turn above it (the one that made the calls). Above a
+        # user turn (the assistant hidden) or with nothing above, it carries its own [TOOL] header:
+        # continuing the user's turn showed the user running the assistant's tools
+        cont = m.role == "tool" and not o.tool_headers and bool(body) and above in ("assistant", "tool")
+        r = render_message(m, o, prev_model, tool_header=not cont)
+        if r is None:
+            continue
+        calls += sum(1 for b in m.blocks if b.kind == "tool_call" and render_block(b, o) is not None)
+        thinking += sum(1 for b in m.blocks if b.kind == "thinking" and render_block(b, o) is not None)
+        if m.role == "assistant" and m.model:
+            prev_model = m.model
+        if cont:
+            body[-1] += "\n" + r        # a tool result continues the turn that called it
+        else:
+            body.append(r)
+            above = m.role
+            if not m.meta.get("notice"):
+                # the import notice is appended to the session, not part of it: counting it made a
+                # view with the notice print a longer header than the ceiling, which never holds it (F33)
+                labels[label(m)] = labels.get(label(m), 0) + 1
+    return body, {"labels": labels, "tool_calls": calls, "thinking": thinking}
+
+
+def header(s: Session, o: RenderOptions, counts: dict | None = None) -> list[str]:
+    """Header lines. The counts are those of the turns the render prints (`counts`, from `_turns`),
+    nothing else: since 2026-09-27 they describe the view, not the whole session. A header that said
+    `user 22, tool 172` over a view showing three turns sent a model looking for eighteen missing
+    messages, and the user's rule is that a model reading an import need not learn what was left
+    out at all. Tool calls and thinking blocks are named only when the view prints some.
 
     There is deliberately no line summarising what the view left out. It used to print
     `shown: 847 of 981 messages (thinking off, …)`, and it grew the more you filtered, so on a
     small session the header could cost more than the filtering saved, and a filtered export could
-    count MORE tokens than the unfiltered ceiling it is measured against. The transcript already
-    marks its own gaps where they happen (a capped result carries `…[+n tokens cut]`, a names-only
-    call prints no output at all), and the GUI still shows "847 of 981 messages" beside the budget,
-    so nothing that was load-bearing is lost. Removed 2026-09-09 at the user's request."""
-    src = source or s
-    roles = src.by_role()
-    lines = [
+    count MORE tokens than the unfiltered ceiling it is measured against. Counting the view keeps that
+    property: a view prints no more turns than the ceiling (D6). The GUI still shows "847 of 981
+    messages" beside the budget, for the person choosing the options."""
+    c = counts if counts is not None else _turns(s, o)[1]
+    got = c["labels"]
+    parts = [f"{k} {got[k]}" for k in _LABELS if got.get(k)] + [f"{k} {v}" for k, v in got.items() if k not in _LABELS and v]
+    line = f"messages: {sum(got.values())}" + (f" ({', '.join(parts)})" if parts else "")
+    if c["tool_calls"]:
+        line += f"    tool calls: {c['tool_calls']}"
+    if c["thinking"]:
+        line += f"    thinking blocks: {c['thinking']}"
+    return [
         f"=== {s.agent} · {s.id} ===",
         f"title:    {s.title or '-'}",
         f"project:  {s.project or '-'}    cwd: {s.cwd or '-'}",
         f"model:    {s.model or '-'}    cli: {s.cli_version or '-'}",
         f"started:  {_fmt(s.started, o.local_time, offset=o.show_offset)}    ended: {_fmt(s.ended, o.local_time, offset=o.show_offset)}",
-        f"messages: {len(src.messages)} ({', '.join(f'{k} {v}' for k, v in roles.items())})"
-        f"    tool calls: {src.count('tool_call')}    thinking blocks: {src.count('thinking')}",
+        line,
     ]
-    return lines
 
 
 def footer(n: int) -> str:
@@ -218,28 +276,20 @@ def wrap_session(s: Session, o: RenderOptions, source: Session | None = None,
 
 def render(s: Session, o: RenderOptions | None = None, source: Session | None = None,
            with_footer: bool = True, with_header: bool = True) -> str:
-    """The transcript; the footer states the token count of everything above it."""
+    """The transcript; the footer states the token count of everything above it.
+
+    `source` (the unfiltered session) is accepted and passed through for the callers that still send
+    it; the header no longer reads it, because it counts the view (see `header`)."""
     o = o or RenderOptions()
+    counts = None
     if o.wrap:
-        # one message holding the conversation; the header is printed once, outside it, and the
-        # single outer turn carries no timestamp (the inner turns lost theirs for the same reason)
+        # one message holding the conversation; the header is printed once, outside it, and counts
+        # the turns inside it. The single outer turn carries no timestamp (the inner turns lost
+        # theirs for the same reason)
+        counts = _turns(s, dataclasses.replace(o, wrap=""))[1]
         s = wrap_session(s, o, source, with_header=False)
         o = dataclasses.replace(o, wrap="", stamps="none")
-    lines = (header(s, o, source) + [""]) if with_header else []
-    body: list[str] = []
-    prev_model = None
-    for m in s.messages:
-        # a tool turn continues the turn above it, unless there is none (the other roles hidden),
-        # in which case it carries its own [TOOL] header: a transcript needs at least one actor
-        cont = m.role == "tool" and not o.tool_headers and bool(body)
-        r = render_message(m, o, prev_model, tool_header=not cont)
-        if r is None:
-            continue
-        if m.role == "assistant" and m.model:
-            prev_model = m.model
-        if cont:
-            body[-1] += "\n" + r        # a tool result continues the turn that called it
-        else:
-            body.append(r)
+    body, own = _turns(s, o)
+    lines = (header(s, o, counts or own) + [""]) if with_header else []
     text = "\n".join(lines) + "\n\n".join(body) + "\n"
     return text + footer(tokens.count(text)) if with_footer else text

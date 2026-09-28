@@ -19,9 +19,11 @@ from pathlib import Path
 
 from ..jsonl import iter_jsonl
 from ..model import ContentBlock, Message, Session, SessionRef, TokenUsage, parse_ts
-from .base import Adapter
+from .base import TITLE_CHARS, Adapter
 
-_SPILL = re.compile(r"For full output see:\s*(\S+)")
+# to the end of the line, not to the first space: a spill path under a home with a space in it
+# must still resolve (see the Claude Code adapter's note on the same pattern)
+_SPILL = re.compile(r"For full output see:[ \t]*([^\r\n<]+?)[ \t]*(?:<|\r?\n|$)")
 
 
 class GeminiCliAdapter(Adapter):
@@ -31,6 +33,7 @@ class GeminiCliAdapter(Adapter):
     default_home = "~/.gemini/tmp"
     writable = True
     native_format = "Gemini CLI chat .jsonl"
+    question_tools = frozenset({"ask_user"})           # ASK_USER_TOOL_NAME in the CLI's bundle (0.58)
 
     def workspaces(self) -> list[str]:
         """Each project dir records its real path in `.project_root`."""
@@ -95,7 +98,7 @@ class GeminiCliAdapter(Adapter):
                         if isinstance(m, dict) and m.get("type") == "user":
                             t = GeminiCliAdapter._parts(m.get("content")).strip()
                             if t and not t.startswith("<session_context>"):
-                                title = t.splitlines()[0][:80]
+                                title = t.splitlines()[0][:TITLE_CHARS]
                                 break
         except OSError:
             pass
@@ -124,7 +127,7 @@ class GeminiCliAdapter(Adapter):
                 continue
             if "$set" in rec:
                 s = rec["$set"]
-                if "messages" in s:            # full snapshot → replace
+                if isinstance(s.get("messages"), list):   # full snapshot → replace
                     by_id, order = {}, []
                     for m in s["messages"]:
                         self._upsert(by_id, order, m)
@@ -169,8 +172,11 @@ class GeminiCliAdapter(Adapter):
                 if results:
                     msgs.append(Message(len(msgs), "tool", ts, results, id=f"{mid}#results"))
             elif t in ("info", "error"):
+                # the CLI's own notices (an API error, a cancelled tool): agent notices, like Claude
+                # Code's `system` records, so the same toggle governs them (ARCHITECTURE D19)
                 text = r.get("content") if isinstance(r.get("content"), str) else self._parts(r.get("content"))
-                msgs.append(Message(len(msgs), "system", ts, [ContentBlock(t, text)], id=mid))
+                msgs.append(Message(len(msgs), "system", ts, [ContentBlock(t, text, meta={"subtype": t})], id=mid,
+                                    meta={"agent_notice": t}))
         return Session(self.name, ref.id, ref.path, msgs, title=self._title(msgs), project=ref.project, cwd=cwd,
                        model=model, started=parse_ts(header.get("startTime")), ended=parse_ts(header.get("lastUpdated")),
                        meta={"project_hash": header.get("projectHash"), "kind": header.get("kind"),
@@ -178,6 +184,8 @@ class GeminiCliAdapter(Adapter):
 
     @staticmethod
     def _upsert(by_id: dict, order: list, m: dict) -> None:
+        if not isinstance(m, dict):                # one malformed entry in a snapshot must not sink the session
+            return
         mid = m.get("id")
         if not mid:
             return
@@ -212,14 +220,27 @@ class GeminiCliAdapter(Adapter):
         b = ContentBlock("tool_result", text, call_id=tc.get("id"), is_error=err)
         m = _SPILL.search(text)
         if m:
-            b.truncated = True
             p = Path(m.group(1))
             b.spill_path = p if p.exists() else (spill_dir / p.name if (spill_dir / p.name).exists() else p)
+            # Read the full output back in, the same policy as Claude Code's tool-results: the
+            # transcript keeps a 40 KB head and a pointer, and the pointer alone left `full` mode
+            # short by the rest (one spill here is 2 MB against 40 KB inline). `replace`, not
+            # strict: one invalid byte must not kill every export of the session.
+            if b.spill_path.is_file():
+                try:
+                    full = b.spill_path.read_text(encoding="utf-8", errors="replace")
+                except OSError:
+                    b.truncated = True                  # pointed somewhere we cannot read
+                    return b
+                b.meta["restored_from_spill"] = len(full) - len(text)
+                b.text = full
+            else:
+                b.truncated = True
         return b
 
     @staticmethod
     def _title(msgs: list[Message]) -> str | None:
         for m in msgs:
             if m.role == "user" and not m.is_env:
-                return m.texts().strip().splitlines()[0][:80] if m.texts().strip() else None
+                return m.texts().strip().splitlines()[0][:TITLE_CHARS] if m.texts().strip() else None
         return None

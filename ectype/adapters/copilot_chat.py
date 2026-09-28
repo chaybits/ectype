@@ -20,7 +20,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from ..model import ContentBlock, Message, Session, SessionRef, TokenUsage, parse_ts
-from .base import Adapter, app_config_dir
+from .base import TITLE_CHARS, Adapter, app_config_dir
 
 
 def _apply(state, path, value, append: bool):
@@ -144,7 +144,8 @@ class CopilotChatAdapter(Adapter):
                     label = inv.get("value") if isinstance(inv, dict) else str(inv)
                     res = part.get("resultDetails") or part.get("pastTenseMessage") or {}
                     rtext = res.get("value") if isinstance(res, dict) else json.dumps(res, ensure_ascii=False)
-                    blocks.append(ContentBlock("tool_call", name=(label or "tool")[:80],
+                    # VS Code serialises the rendered card's label, not a tool name; cut like a title
+                    blocks.append(ContentBlock("tool_call", name=(label or "tool")[:TITLE_CHARS],
                                                call_id=str(part.get("toolCallId") or ""),
                                                args=part.get("toolSpecificData")))
                     if rtext:

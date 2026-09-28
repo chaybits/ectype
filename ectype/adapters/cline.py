@@ -20,7 +20,7 @@ from pathlib import Path
 
 from ..model import ContentBlock, Message, Session, SessionRef, TokenUsage, parse_ts
 from ._anthropic import result_text
-from .base import Adapter
+from .base import TITLE_CHARS, Adapter
 
 _INPUT = re.compile(r"<user_input[^>]*>\s*(.*?)\s*</user_input>", re.S)
 
@@ -30,6 +30,21 @@ class ClineAdapter(Adapter):
     label = "Cline"
     env_home = "ECTYPE_CLINE_HOME"
     default_home = "~/.cline/data/sessions"
+    writable = True                                   # the Cline CLI resumes a written session (proven 2026-09-18; see convert.TARGETS)
+    native_format = "Cline CLI session (.json + .messages.json)"
+    question_tools = frozenset({"ask_followup_question"})   # the answer comes back wrapped in <answer>…</answer>
+
+    def workspaces(self) -> list[str]:
+        """The working directory of every session, from its metadata file."""
+        out: list[str] = []
+        for r in self.discover():
+            try:
+                cwd = json.loads(r.path.read_text(encoding="utf-8-sig")).get("workspace_root") or None
+            except (OSError, ValueError):
+                continue
+            if cwd and cwd not in out:
+                out.append(cwd)
+        return sorted(out)
 
     def discover(self) -> list[SessionRef]:
         home = self.home()
@@ -52,7 +67,7 @@ class ClineAdapter(Adapter):
                                   parse_ts(meta.get("ended_at")) or datetime.fromtimestamp(st.st_mtime, tz=timezone.utc),
                                   size,
                                   project=Path(meta.get("workspace_root") or meta.get("cwd") or ".").name,
-                                  title=(prompt[0][:80] if prompt else None)))
+                                  title=(prompt[0][:TITLE_CHARS] if prompt else None)))
         return out
 
     def artifacts(self, ref: SessionRef) -> list[tuple[Path, str]]:
@@ -67,7 +82,9 @@ class ClineAdapter(Adapter):
             raw = json.loads(msgs_f.read_text(encoding="utf-8-sig"))
         items = raw.get("messages") if isinstance(raw, dict) else raw
         msgs: list[Message] = []
-        for m in items or []:
+        for m in items if isinstance(items, list) else []:
+            if not isinstance(m, dict):
+                continue
             blocks: list[ContentBlock] = []
             content = m.get("content")
             if isinstance(content, str):
@@ -94,18 +111,20 @@ class ClineAdapter(Adapter):
             role = m.get("role", "assistant")
             if role == "user" and all(b.kind == "tool_result" for b in blocks):
                 role = "tool"
-            met = m.get("metrics") or {}
+            met = m.get("metrics")
             tok = None
-            if met:
+            if isinstance(met, dict) and met:
                 tok = TokenUsage(input=met.get("inputTokens"), output=met.get("outputTokens"),
                                  cached=met.get("cacheReadTokens"))
                 tok.total = sum(v for v in (tok.input, tok.output, tok.cached) if v)
-            mi = m.get("modelInfo") or {}
+            mi = m.get("modelInfo") if isinstance(m.get("modelInfo"), dict) else {}
             msgs.append(Message(len(msgs), role, parse_ts(m.get("ts")), blocks, id=m.get("id"),
                                 model=mi.get("id") if isinstance(mi, dict) else None, tokens=tok))
         return Session(self.name, ref.id, ref.path, msgs, title=ref.title, project=ref.project,
                        cwd=meta.get("workspace_root") or meta.get("cwd"), model=meta.get("model"),
-                       cli_version=str(meta.get("version") or ""),
+                       # the writer's release (`sessionHistoryOrigin.version`), not the metadata
+                       # schema's `version` (1), which this read before (the 2026-09-26 ideas round)
+                       cli_version=str(((meta.get("metadata") or {}).get("sessionHistoryOrigin") or {}).get("version") or "") or None,
                        started=parse_ts(meta.get("started_at")), ended=parse_ts(meta.get("ended_at")),
                        meta={"provider": meta.get("provider"), "status": meta.get("status"),
                              "source": meta.get("source"), "enable_tools": meta.get("enable_tools")})

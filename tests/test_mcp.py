@@ -85,7 +85,7 @@ def main() -> int:
     check(r[0]["result"]["serverInfo"]["name"] == "ectype" and r[0]["result"]["protocolVersion"] == "2025-06-18",
           "initialize names the server and echoes the protocol version the client asked for")
     names = [t["name"] for t in r[1]["result"]["tools"]]
-    check(names == ["list_sessions", "show_session", "session_budget", "summarize_session", "list_agents"],
+    check(names == ["list_sessions", "show_session", "session_budget", "summarize_session", "search_sessions", "list_agents"],
           f"read-only by default: no write tool in the list ({', '.join(names)})")
     check(all(t.get("inputSchema", {}).get("type") == "object" for t in r[1]["result"]["tools"]),
           "every tool declares an object input schema")
@@ -117,8 +117,11 @@ def main() -> int:
               call("no_such_tool", {}, 4),
               {"jsonrpc": "2.0", "id": 5, "method": "nope/x"}])
     by = {x["id"]: x for x in r}
-    check(by[2]["result"]["isError"] and "read-only" in by[2]["result"]["content"][0]["text"],
-          "the write tool refuses when it was not enabled")
+    # third audit, F81: a read-only server does not serve install_session, so it answers as for any
+    # unknown tool, and the list it gives names only the tools it serves
+    txt = by[2]["result"]["content"][0]["text"]
+    check(by[2]["result"]["isError"] and "unknown tool" in txt and "install_session;" not in txt and ", install_session" not in txt,
+          "the write tool does not exist on a read-only server, and is not advertised there")
     check(by[3]["result"]["isError"], "an unknown id is an error RESULT, not a dead connection")
     check(by[4]["result"]["isError"] and "unknown tool" in by[4]["result"]["content"][0]["text"],
           "an unknown tool says so")

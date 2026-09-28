@@ -1,0 +1,21 @@
+# A worked example of an ectype adapter plug-in: one file, one entry point. Install it beside
+# ectype with `pip install integrations/adapter-plugin` (or `-e` for a checkout) and
+# `ectype agents` lists "example" with the built-ins; nothing in ectype changes.
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ectype-adapter-example"
+version = "0.0.1"
+description = "Example adapter plug-in for ectype: reads a folder of .chat.jsonl files"
+requires-python = ">=3.10"
+dependencies = ["ectype-cli"]
+
+# The whole mechanism: the group is "ectype.adapters", the name is yours, the value is
+# "module:AdapterClass". ectype loads it at start.
+[project.entry-points."ectype.adapters"]
+example = "ectype_adapter_example:ExampleAdapter"
+
+[tool.setuptools]
+py-modules = ["ectype_adapter_example"]

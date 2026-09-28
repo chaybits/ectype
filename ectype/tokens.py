@@ -56,7 +56,10 @@ def truncate(text: str, n: int) -> tuple[str, int, int]:
         ids = enc.encode(text, disallowed_special=())
         if len(ids) <= n:
             return text, 0, len(ids)
-        return enc.decode(ids[:n]), len(ids) - n, len(ids)
+        # decoded as bytes, then UTF-8 with the partial last character dropped: a cut inside a
+        # multi-byte character (Ğ and Ş are two tokens each in cl100k) used to end the kept text in
+        # U+FFFD; a genuine U+FFFD in the source is a complete character and survives
+        return enc.decode_bytes(ids[:n]).decode("utf-8", "ignore"), len(ids) - n, len(ids)
     total = max(1, len(text) // CHARS_PER_TOKEN)
     keep = n * CHARS_PER_TOKEN
     if len(text) <= keep:

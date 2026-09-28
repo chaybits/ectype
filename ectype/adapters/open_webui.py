@@ -66,15 +66,22 @@ class OpenWebUIAdapter(Adapter):
     def artifacts(self, ref: SessionRef) -> list[tuple[Path, str]]:
         """Export just this chat into a small webui.db with the same `chat` (and `user`) schema."""
         tmp = scratch_dir("ectype-owui-") / "webui.db"
-        src = self._connect(); dst = sqlite3.connect(tmp)
-        for t in ("chat", "user"):
-            sql = src.execute("select sql from sqlite_master where type='table' and name=?", (t,)).fetchone()
-            if sql:
-                dst.execute(sql[0])
-        cols = [c[1] for c in src.execute("pragma table_info(chat)")]
-        for row in src.execute("select * from chat where id=?", (ref.id,)):
-            dst.execute(f"insert into chat values ({','.join('?' * len(cols))})", row)
-        dst.commit(); dst.close(); src.close()
+        src = self._connect()
+        try:
+            dst = sqlite3.connect(tmp)
+            try:
+                for t in ("chat", "user"):
+                    sql = src.execute("select sql from sqlite_master where type='table' and name=?", (t,)).fetchone()
+                    if sql:
+                        dst.execute(sql[0])
+                cols = [c[1] for c in src.execute("pragma table_info(chat)")]
+                for row in src.execute("select * from chat where id=?", (ref.id,)):
+                    dst.execute(f"insert into chat values ({','.join('?' * len(cols))})", row)
+                dst.commit()
+            finally:
+                dst.close()                          # on the failure path too
+        finally:
+            src.close()
         return [(tmp, "webui.db")]
 
     def load(self, ref: SessionRef) -> Session:

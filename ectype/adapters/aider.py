@@ -20,7 +20,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from ..model import ContentBlock, Message, Session, SessionRef, TokenUsage
-from .base import Adapter
+from .base import TITLE_CHARS, Adapter
 
 _START = re.compile(r"^#\s*aider chat started at\s+(.+?)\s*$")
 _USER = re.compile(r"^####\s?(.*)$")
@@ -112,7 +112,7 @@ class AiderAdapter(Adapter):
                 out.append(SessionRef(self.name, f"{f.parent.name}#{i}", f,
                                       ts or datetime.fromtimestamp(st.st_mtime, tz=timezone.utc),
                                       len("\n".join(body).encode()), project=f.parent.name,
-                                      title=(title or "").strip()[:80] or None))
+                                      title=(title or "").strip()[:TITLE_CHARS] or None))
         return out
 
     def find(self, id_prefix: str) -> list[SessionRef]:

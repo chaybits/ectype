@@ -15,7 +15,7 @@ CARRY: list[tuple[str, str, str]] = [           # (element, fate, detail)
     ("injected context", "dropped", "harness-specific; the target injects its own"),
     ("notices", "dropped", "system / info / error blocks"),
     ("images", "dropped", "not carried"),
-    ("timestamps", "carried", "kept where the target stores them; re-stamped monotonically where it needs order"),
+    ("timestamps", "carried", "kept where the target stores them; a turn without one takes the previous turn's, so the order holds"),
     ("cwd and project", "carried", "from the source; the model name comes from the target (template)"),
     ("import notice", "added", "a final message telling the model the session was imported (Settings → Import notice)"),
 ]
@@ -37,22 +37,28 @@ CARRY_NATIVE: list[tuple[str, str, str]] = [
 ]
 TARGETS: dict[str, dict] = {
     # verified = when the live resume was last checked; ectype = this tool's version on that day
-    "claude-code": {"label": "Claude Code", "verified": "2026-09-04", "version": "2.1", "ectype": "0.1.0",
+    "claude-code": {"label": "Claude Code", "verified": "2026-09-10", "version": "2.1", "ectype": "0.2.0",
                     "resume": "claude --resume <id>  (run from the source's cwd)",
                     "notes": "lands in ~/.claude/projects/<cwd-slug>/; a --template session gives a version-exact envelope"},
     "codex": {"label": "Codex CLI", "verified": "2026-09-04", "version": "0.153", "ectype": "0.1.0",
               "resume": "codex resume <id>",
               "notes": "writes the legacy session_meta header Codex reads directly; the modern paginated header loads but resumes empty"},
     "gemini-cli": {"label": "Gemini CLI", "verified": "2026-09-04", "version": "0.58", "ectype": "0.1.0",
-                   "resume": "gemini --resume latest  (from the same project directory)",
-                   "notes": "projectHash = sha256(cwd) unless a --template from that project is given; Gemini resumes by index, not id"},
+                   "resume": "gemini --resume <id>  (from the same project directory)",
+                   "notes": "filed in the folder Gemini maps the cwd to (projects.json, then .project_root, then its slug); resumed by full session id, which 0.58.0 accepts (read from its bundle 2026-09-25; `latest` picks by start time, not by install); projectHash = sha256(cwd) unless a --template from that project is given"},
+    "cline": {"label": "Cline", "verified": "2026-09-18", "version": "3.0.62", "ectype": "0.3.1",
+              "resume": "cline --id <id>  (opens the CLI's terminal UI; run it from the source's cwd)",
+              "notes": "two JSON files under ~/.cline/data/sessions/<id>/ plus one row in the index db/sessions.db, which is what "
+                       "`cline history` and `--id` read; the CLI resumes only in its terminal UI, so --verify drives it through a "
+                       "pseudo-terminal; a --template (or --mint-template) supplies the provider, model and system prompt"},
 }
 SOURCE_NOTES: dict[str, str] = {
+    "cline": "user text is unwrapped from the <user_input> tag the CLI stores it in; as a target, the import notice and the banner become plain user turns",
     "codex": "its reasoning is encrypted at the source; even the original file holds only summaries",
     "antigravity": "a failed tool call leaves no step; its result is inferred and flagged. Antigravity is source-only (resumable state lives in a protobuf SQLite blob)",
     "lmstudio": "LM Studio never stores tool output; results fold as (empty)",
     "aider": "console output is recorded as system messages, which a conversion drops; only user and assistant text carries",
-    "gemini-cli": "big tool outputs live in tool-outputs/ spill files and are read from there",
+    "gemini-cli": "big tool outputs live in tool-outputs/ spill files and are read back in; the transcript itself keeps only a 40 KB head",
     "copilot-chat": "terminal output may be missing where VS Code let the scrollback drop it",
     "roo-code": "per-message timestamps are the conversation file's own; the UI log supplies only the session end and the error count",
     "sillytavern": "only the selected swipe of each message is carried; alternatives are dropped",

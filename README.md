@@ -28,8 +28,18 @@ Python 3.10+ and no dependencies. The distribution is `ectype-cli`; the command 
 package are both `ectype`. Without the `tokens` extra, token counts are estimated at four
 characters each.
 
-Every release also carries `ectype.pyz`, the whole program in one file for anyone who would
-rather not install it at all: `python ectype.pyz gui`.
+Two more routes, both attached to every release:
+
+- **`ectype-<version>-windows-x64.zip`**, for Windows with no Python and no terminal. Unzip it
+  anywhere and double-click `ectype-gui.bat`. It brings its own copy of Python, keeps its settings
+  inside its own folder, and is uninstalled by deleting that folder: nothing is written to PATH or
+  the registry. About 10 MB.
+- **`ectype.pyz`**, the whole program in one file for anyone who has Python but would rather not
+  install anything: `python ectype.pyz gui`.
+
+Each attached file comes with a `.sha256` beside it (`sha256sum -c ectype.pyz.sha256` checks it)
+and a build-provenance attestation: `gh attestation verify ectype.pyz --owner chaybits` confirms
+that the file was built by this repository's release workflow.
 
 Each agent's store is resolved in one order: **`$ECTYPE_<AGENT>_HOME`** (Codex uses its own
 `$CODEX_HOME`), then the path saved in Settings, then the agent's own default. `ectype agents`
@@ -72,7 +82,7 @@ text back into the render, and a native copy carries those files along and repoi
 | Claude `<uuid>/tool-results/<hash>.txt` | the full text of a result the transcript truncated | read back into the result block; copied with a native export |
 | Claude `<uuid>/subagents/agent-*.jsonl` | Task-tool subagent runs, separate conversations | listed in `session.meta["subagents"]`, never folded into the parent |
 | Claude `<uuid>/custom-title.json` | the title you set by hand, written only when you set one | used as the session title; otherwise the transcript's own summary or first prompt is used |
-| Gemini `tool-outputs/session-<id>/<callId>.txt` | the same idea, per tool call | recorded as `spill_path` on the result |
+| Gemini `tool-outputs/session-<id>/<callId>.txt` | the same idea, per tool call; the transcript keeps a 40 KB head | read back into the result block, like Claude's |
 | Codex `session_index.jsonl` | store-level thread index | read for titles; written when installing a session |
 
 ![A spill file restored into the transcript](docs/showcase/7-spill-file-restored.jpg)
@@ -106,12 +116,42 @@ the reasoning, `--no-tools` drops tool activity altogether. Without `-o` it prin
 
 ```bash
 ectype summarize a1b2c3d4        # asks, tools, files, commands, errors, keywords
+ectype summarize --all           # keep a summary of every session that is new or changed since last time
+ectype search "wireguard|vpn"    # have I dealt with this before? A regex over every session's summary
 ```
 
 Extracted from the transcript, with no model and no API key: what was asked, which tools ran and
 how often, which files were touched, which commands ran, what failed, and a lowercase keyword line
 meant for `grep` rather than for reading. On a 981-message session that is a few hundred tokens
 against 347,517 for the transcript, which is often enough to decide whether to open it at all.
+
+`summarize --all` keeps one such summary per session beside the settings file and remembers which
+version of each file it saw, so a second run only touches what changed (`--force` redoes all of
+them; `summarize <id> --save` keeps one). It covers the agents switched on in Settings → Agents:
+the coding agents, and not the chat apps unless you switch one on, because reading personal
+conversations into summaries is a choice, not a default; `-a lmstudio` names one explicitly.
+`search` first summarises what is new or changed since the last one (every other session is only
+fingerprinted, so a repeat search reads no transcript), then matches a regex against every kept
+summary and says how many sessions it covered, so an empty result is never mistaken for "never
+happened". Nothing here writes into an agent's
+store.
+
+When the agent itself wrote a summary of the session, between a pair of markers in one of its own
+turns, `summarize` quotes it first (every such block, in order), so the kept summary carries the
+agent's own account of what mattered and `search` finds it. The markers are literal text, set in
+Settings → Summary: `%%SUMMARY%%` by default, which Markdown shows exactly as written, and several
+are allowed. An agent writes one when its instructions ask, and `ectype summary-rule` adds that
+request to the instruction files you pick, inside a block it owns and backs up:
+
+```bash
+ectype summary-rule print                  # the paragraph, to paste by hand
+ectype summary-rule install -a codex       # into Codex's AGENTS.md (or claude-code, gemini-cli, --file PATH)
+ectype summary-rule remove -a codex        # and out again
+```
+
+Only the assistant's turns are read, so a summary you paste into a prompt is not taken for the new
+session's. `summarize --marker TEXT` looks for another marker once, and the web UI shows the same
+text under **Summary**, and the paragraph and each agent's file under Settings → Summary.
 
 ### Export it
 
@@ -124,14 +164,18 @@ ectype export a1b2c3d4 --wrap user --format jsonl -o one.jsonl     # the whole t
 
 `--mode` is the one dial that decides most of the bill: `brief` keeps the tool's name alone,
 `custom` keeps the first `--cap` tokens of each result, `full` keeps every argument and every
-byte. Back-to-back turns of the same actor are merged into one turn by default, a tool result
-riding with the call that produced it (`--no-collapse` turns that off).
+byte. In `custom` mode the text-based formats (text, markdown, html, csv) also cut a call's
+arguments at 200 characters; `json` and `jsonl` carry them whole, because a structured export is
+data rather than a view. Back-to-back turns of the same actor are merged into one turn by default,
+a tool result riding with the call that produced it (`--no-collapse` turns that off).
 
-Every export starts with a header naming the session, its project, model and message counts.
-Where the view leaves something out, the transcript says so at that point: a capped result carries
+Every export starts with a header naming the session, its project and model, and counting the
+turns it shows, and nothing else: a model reading an import is not told what the options left
+out. Where a view shortens something, the transcript says so at that point: a capped result carries
 `…[+n tokens cut]`, a names-only call prints no output, and the web UI shows "685 of 924 messages"
-beside the budget. `--notice` appends a final message telling the receiving model that the session
-was imported and that paths, dates and tools should be re-checked.
+beside the budget. Every export and conversion ends with a short message telling the receiving
+model that the session was imported and that paths, dates and tools should be re-checked;
+`--no-notice` leaves it out, and Settings → Import notice turns it off by default.
 
 `--redact` applies rules computed from the running machine, so nothing personal is hard-coded:
 your home directory, your username, hostname, e-mail addresses, common API-key shapes, optionally
@@ -166,9 +210,11 @@ dropped, and the web UI shows the same table before you commit to it.
 
 ![Conversion table: Claude Code to Codex CLI](docs/showcase/4-conversion-cross-agent.jpg)
 
-Claude Code, Codex CLI and Gemini CLI can be written, because each was proven by installing a
-converted session and resuming it for real (2026-09-04, against Claude Code 2.1, Gemini CLI 0.58
-and Codex CLI 0.153). The other ten are read-only: Antigravity and Cursor keep resumable state in
+Claude Code, Codex CLI, Gemini CLI and the Cline CLI can be written, because each was proven by
+installing a converted session and resuming it for real (2026-09-04 against Claude Code 2.1,
+Gemini CLI 0.58 and Codex CLI 0.153; 2026-09-18 against Cline 3.0.62, whose store is two JSON
+files plus a row in its own index, and which resumes only in its terminal UI). The other nine are
+read-only: Antigravity and Cursor keep resumable state in
 a database an outside writer cannot safely forge, Copilot Chat in a patch log the editor holds
 open, Aider has one shared Markdown history per repo with no session to resume, the chat apps have
 no resume at all, and Cline, Roo Code and Continue are plausible targets that no live resume has
@@ -191,10 +237,14 @@ ectype backup --restore NAME --dry-run  # names every destination, writes nothin
 ```
 
 Each backup is one timestamped folder with a manifest recording where every file came from, which
-is what lets `--restore` put them back without guessing. An install takes one of these by itself
+is what lets `--restore` put them back without guessing. A restore first saves what it is about to
+overwrite as a backup of its own (`before-restore-<name>`), so it can be undone the same way. An install takes one of these by itself
 whenever it would modify a file the store already owns, and `--no-backup` opts out. Most installs
 only add a file and so need nothing: Codex is the exception, because it appends to the store's own
-session index and its migration rewrites the thread history.
+session index and its migration rewrites the thread history, and Cline is the other, because its
+index gets a row. By default every backup is kept; Settings → Backups sets how many to keep or for
+how many days (`backup.keep_last`, `backup.keep_days`, 0 = no limit), applied each time a new
+backup is taken or on demand with `ectype backup --prune`.
 
 ### Browse it
 
@@ -208,30 +258,70 @@ ectype gui        # 127.0.0.1:8765, stdlib http.server, no dependencies
 claude mcp add ectype -- ectype mcp     # any MCP client: ectype mcp speaks JSON-RPC on stdio
 ```
 
-Four read-only tools: `list_sessions`, `session_budget` (what a session costs before you read it),
-`show_session` (at a depth the agent picks) and `list_agents`. So an agent can answer "what did we
-decide about X last week" by finding the session, checking the price, and pulling in the names-only
-view instead of 347,517 tokens of transcript.
+Six read-only tools: `list_sessions`, `search_sessions` (the regex over kept summaries),
+`session_budget` (what a session costs before you read it), `show_session` (at a depth the agent
+picks; the cap from Settings applies unless it says otherwise), `summarize_session` and
+`list_agents`. So an agent can answer "what did we decide about X last week" by searching, finding
+the session, checking the price, and pulling in the names-only view instead of 347,517 tokens of
+transcript.
 
-A fifth tool writes into an agent's store and therefore does not exist unless you start the server
-with `ectype mcp --allow-write`: a tool an agent cannot see is a tool it cannot be talked into
-calling. There is a Claude Code slash command too. See [`integrations/`](integrations/).
+A seventh tool writes into an agent's store and therefore does not exist unless you start the
+server with `ectype mcp --allow-write`: a tool an agent cannot see is a tool it cannot be talked
+into calling.
+
+There is a slash command for Claude Code, Gemini CLI and Codex too, installed and named by ectype:
+
+```bash
+ectype skill install                          # /ectype in all three (one file each, in the agent's command folder)
+ectype skill install --name bringmedasummary  # call it what you like; the name is remembered in Settings
+ectype skill status                           # what is installed, where
+```
+
+A file ectype wrote records a hash of its own text, so `status` tells one nobody touched (a plain
+`install` updates it, also after an ectype update) from one you edited (kept, unless `install
+--force`, which saves it as `.bak` first) and from a command of your own (never touched).
+
+The files go into each agent's command folder (`~/.claude/commands`, `~/.gemini/commands`,
+`~/.codex/prompts`), or under `CLAUDE_CONFIG_DIR`, `GEMINI_CLI_HOME` and `CODEX_HOME` when those
+are set, because that is where the agents look.
+
+All three are built on one command:
+
+```bash
+ectype recall a1b2c3d4                       # the session the way the skill wants it, then its summary is kept
+ectype recall a1b2c3d4 --tools --mode custom --cap 300 --thinking   # options typed after the id win
+```
+
+`recall` is `show` with its defaults taken from Settings → Agent skill, which holds every option a
+view has (tool calls and their output, thinking, injected context, the agent's questions and
+other sessions' messages, timestamps, merging, redaction, the import notice, and whether to keep
+the summary), so how a session is brought into an agent is decided once, in one place, and
+overridden per call. It starts with the conversation alone, and `--tools` adds the tool calls.
+The Settings dialog shows the exact command those defaults produce.
+
+### Add an agent yourself
+
+An adapter for an agent ectype does not know can live in its own package: it registers itself
+under the `ectype.adapters` entry-point group and ectype loads it at start. A complete working
+example and the contract it has to meet are in
+[`integrations/adapter-plugin/`](integrations/adapter-plugin/).
 
 ## What a session costs
 
-One real session: 981 messages, 8 MB of JSONL on disk, 377 tool calls, counted with `cl100k_base`.
+One real session: 989 messages, 8 MB of JSONL on disk, 377 tool calls, counted with `cl100k_base`.
 
-**What fills it**, with every option on and nothing capped, 347,517 tokens:
+**What fills it**, with every option on and nothing capped, 348,204 tokens:
 
 | element | tokens | share |
 |---|---|---|
-| tool results | 157,932 | 45.4% |
-| tool call arguments | 138,847 | 40.0% |
-| thinking | 39,126 | 11.3% |
+| tool results | 157,947 | 45.4% |
+| tool call arguments | 138,847 | 39.9% |
+| thinking | 39,126 | 11.2% |
 | assistant text | 9,541 | 2.7% |
 | your messages | 1,108 | 0.3% |
+| the agent's own notices | 489 | 0.1% |
 | injected context | 301 | 0.1% |
-| headers and timestamps | 662 | 0.2% |
+| headers and timestamps | 845 | 0.2% |
 
 The conversation itself is 3% of that. Everything else is the agent talking to its tools, which is
 why one dial decides almost the whole bill.
@@ -240,11 +330,11 @@ why one dial decides almost the whole bill.
 
 | view | tokens | against the default |
 |---|---|---|
-| everything, nothing capped | 307,897 | +239,048 |
-| results capped at 150 (the default) | 68,849 | 0 |
-| results capped at 50 | 56,656 | -12,193 |
-| names only | 13,073 | -55,776 |
-| no tool calls or results at all | 11,034 | -57,815 |
+| everything, nothing capped | 307,949 | +239,071 |
+| results capped at 150 (the default) | 68,878 | 0 |
+| results capped at 50 | 56,685 | -12,193 |
+| names only | 13,110 | -55,768 |
+| no tool calls or results at all | 11,064 | -57,814 |
 
 Names only keeps every call, in order, with its name and nothing else, and costs 4% of the whole
 session. It drops the arguments too, which is most of the saving: a single `Bash` command or file
@@ -272,7 +362,10 @@ table comes from:
    file on disk, which also holds the JSON envelope and usage records, so it is several times the
    transcript inside it.
 2. **What goes in.** Tool output (names only, capped, everything), thinking, tool calls and
-   results, injected context, timestamps, merge, hiding either side, and a message range. Every
+   results, injected context, the agent's own notices (API errors, refusals, away summaries,
+   where the store keeps them), the questions the agent put to you with your answers (shown as
+   the turns they are, even with tool calls off), messages other sessions sent in (each under
+   `[PEER]`), timestamps, merge, hiding either side, and a message range. Every
    control has a tooltip, and **? Help** explains all of them and every number.
 3. **Redaction.** Switch it on and its rules appear inline, with a box for your own words. After a
    render the status line lists what matched; clicking it shows every matched value next to its
@@ -289,8 +382,11 @@ table comes from:
    partly included element expands into what is in now and what is left out.
 7. **The preview.** Exactly what the export will contain, coloured by role.
 8. **Help, the conversion table for any pair of agents, and Settings**: which agents are listed,
-   each agent's store path and resume format, view defaults, redaction rules, export behaviour and
-   the wording of the import notice.
+   each agent's store path and resume format, view defaults, redaction rules, export behaviour,
+   the port the web UI listens on, how the agent skill (`ectype recall`) brings a session in and
+   under what command name (with Install and Remove for the three agents' command files), how many
+   backups to keep, and the wording of the import notice. Help ends with an About section:
+   version, the GitHub and PyPI pages, the licence.
 
 Times are printed in local time; every store records UTC internally.
 
@@ -300,8 +396,9 @@ Times are printed in local time; every store records UTC internally.
   thinking is dropped, even where the target could represent them natively.
 - **Branching stores are flattened.** SillyTavern swipes, LM Studio versions and the Open WebUI
   message tree load as the selected path; the alternatives are parked in `meta["alternatives"]`.
-- **Three writable targets.** Only Claude Code, Codex CLI and Gemini CLI can be written, because
-  each was proven by installing a converted session and resuming it for real.
+- **Four writable targets.** Only Claude Code, Codex CLI, Gemini CLI and the Cline CLI can be
+  written, because each was proven by installing a converted session and resuming it for real.
+  Cline resumes only in its terminal UI, so `--verify` drives that UI through a pseudo-terminal.
 - **A headless Antigravity run's working directory** lives only in `cli.log`, which is short and
   rotates; older headless runs have none.
 - **Codex full outputs are matched to calls by order**, not by id: usually right, not always.

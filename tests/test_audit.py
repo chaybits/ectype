@@ -1,4 +1,4 @@
-"""Regression checks for the 2026-09-10 audit: one function per finding (MD/audit/20260910-report.md),
+"""Regression checks for the 2026-09-10 audit: one function per finding (the report is kept in the workbench),
 plus later defects found the same way (a `test_f2_*` name is a feedback round, not an audit finding).
 
     python3 tests/test_audit.py
@@ -374,8 +374,14 @@ def test_f2_backup_copies_a_session_and_puts_it_back() -> None:
         check(bk.save([TMP / "does-not-exist"], "nothing") is None, "nothing to save is None, not an empty folder")
         names = [b["name"] for b in bk.listing()]
         check(folder.name in names, "the backup shows up in the listing")
-    check([p.name for p in bk.at_risk("codex", Path("/store"))] == ["session_index.jsonl", "thread_history.sqlite"],
-          "Codex names the two store files its install modifies")
+    # the database names carry a schema number (0.153: thread_history_1, state_5); the fixed name this
+    # once asserted did not exist, so nothing was backed up (third audit, F18)
+    cx = TMP / "codex-store"
+    cx.mkdir(exist_ok=True)
+    for n in ("thread_history_1.sqlite", "state_5.sqlite", "logs_2.sqlite"):
+        (cx / n).write_bytes(b"")
+    check([p.name for p in bk.at_risk("codex", cx)] == ["session_index.jsonl", "thread_history_1.sqlite", "state_5.sqlite"],
+          "Codex names the index and the versioned databases its install modifies, not its logs")
     check(bk.at_risk("claude-code", Path("/store")) == [] and bk.at_risk("gemini-cli", Path("/store")) == [],
           "a writer that only adds a file puts nothing at risk")
 

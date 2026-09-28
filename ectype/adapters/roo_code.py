@@ -22,7 +22,7 @@ from pathlib import Path
 
 from ..model import ContentBlock, Message, Session, SessionRef, TokenUsage, parse_ts
 from ._anthropic import result_text
-from .base import Adapter, app_config_dir
+from .base import TITLE_CHARS, Adapter, app_config_dir
 
 _WRAP = re.compile(r"<(?:user_message|task|feedback)>\s*(.*?)\s*</(?:user_message|task|feedback)>", re.S)
 _ENV = re.compile(r"<environment_details>.*?</environment_details>", re.S)
@@ -35,6 +35,7 @@ class RooCodeAdapter(Adapter):
     label = "Roo Code"
     env_home = "ECTYPE_ROO_HOME"
     default_home = app_config_dir("Code") + "/globalStorage/rooveterinaryinc.roo-cline/tasks"
+    question_tools = frozenset({"ask_followup_question"})   # inherited from Cline, options as <suggest> items
 
     def discover(self) -> list[SessionRef]:
         home = self.home()
@@ -52,9 +53,11 @@ class RooCodeAdapter(Adapter):
             if hi.exists():
                 try:
                     h = json.loads(hi.read_text(encoding="utf-8-sig"))
-                    title = (h.get("task") or "").strip().splitlines()[:1]
-                    title = title[0][:80] if title else None
-                    ts = parse_ts(h.get("ts"))
+                    if isinstance(h, dict):          # any other shape: no title, and the store keeps listing
+                        task = h.get("task")
+                        title = task.strip().splitlines()[:1] if isinstance(task, str) else []
+                        title = title[0][:TITLE_CHARS] if title else None
+                        ts = parse_ts(h.get("ts"))
                 except (OSError, ValueError):
                     pass
             out.append(SessionRef(self.name, d.name, api,

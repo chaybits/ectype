@@ -1,6 +1,6 @@
 """One writer per agent that can be RESUMED from a file this tool wrote: Claude Code, Codex CLI,
-Gemini CLI. Each was proven by installing a converted session and resuming it live (see
-`tables.TARGETS` for the versions). The target agent writes its own envelope where a template is
+Gemini CLI and the Cline CLI. Each was proven by installing a converted session and resuming it live
+(see `tables.TARGETS` for the versions). The target agent writes its own envelope where a template is
 given; without one the writer uses minimal defaults that were valid for the versions observed."""
 from __future__ import annotations
 
@@ -14,8 +14,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from ..model import Session
-from .common import _iso, _no_cwd, _read_jsonl, _slug, _store, _uuid7, _write_jsonl
-from .fold import FidelityReport, Turn
+from .common import (_iso, _no_cwd, _read_jsonl, _slug, _store, _uuid7, _write_jsonl, _write_text, cline_id,
+                     cline_index_problem, cline_register, gemini_project_dir)
+from .fold import FidelityReport, Turn, banner_is
 
 
 # --------------------------------------------------------------------------- writers
@@ -59,6 +60,7 @@ def write_claude(s: Session, turns: list[Turn], out_dir: Path, template: Path | 
     dest = (_store("claude-code") / slug if install else out_dir / slug)
     p = dest / f"{sid}.jsonl"
     _write_jsonl(p, recs)
+    rep.new_id = sid
     rep.notes.append(f"resume with: cd {env['cwd']} && claude --resume {sid}" if install else
                      f"to try it: copy {p.parent.name}/{p.name} under ~/.claude/projects/ and run `claude --resume {sid}`")
     return p
@@ -148,6 +150,7 @@ def write_codex(s: Session, turns: list[Turn], out_dir: Path, template: Path | N
     base = home if install else out_dir
     p = base / "sessions" / local.strftime("%Y/%m/%d") / f"rollout-{local.strftime('%Y-%m-%dT%H-%M-%S')}-{sid}.jsonl"
     _write_jsonl(p, recs)
+    rep.new_id = sid
     title = (s.title or "imported session")[:60]
     idx_line = json.dumps({"id": sid, "thread_name": title, "updated_at": _iso(turns[-1].timestamp if turns else None)})
     if install:
@@ -173,7 +176,7 @@ def write_codex(s: Session, turns: list[Turn], out_dir: Path, template: Path | N
         else:
             rep.notes.append(f"optional later (codex not on PATH): codex migrate-rollouts --thread {sid} --apply")
     else:
-        (base / "session_index.jsonl").write_text(idx_line + "\n", encoding="utf-8")
+        _write_text(base / "session_index.jsonl", idx_line + "\n")
         rep.notes.append(f"to try it: copy sessions/… under $CODEX_HOME, append session_index.jsonl, run "
                          f"`codex migrate-rollouts --thread {sid} --apply`, then `codex resume {sid}`")
     return p
@@ -207,18 +210,109 @@ def write_gemini(s: Session, turns: list[Turn], out_dir: Path, template: Path | 
             recs.append({"id": mid, "timestamp": _iso(t.timestamp), "type": "gemini", "content": t.text,
                          "model": "imported"})
     recs.append({"$set": {"lastUpdated": _iso(end)}})
-    proj = Path(cwd).name.lower() or "project"
     home = _store("gemini-cli")
-    base = (home if install else out_dir) / proj
+    base = gemini_project_dir(home if install else out_dir, cwd)      # the folder Gemini itself maps cwd to
     local = start.astimezone()
     p = base / "chats" / f"session-{local.strftime('%Y-%m-%dT%H-%M')}-{sid[:8]}.jsonl"
     _write_jsonl(p, recs)
+    rep.new_id = sid
     root = base / ".project_root"
     if not root.exists():
-        root.write_text(cwd, encoding="utf-8")
-    rep.notes.append(f"resume with: cd {cwd} && gemini --resume latest   (Gemini resumes by index/'latest', not by id)" if install else
-                     f"to try it: copy {proj}/ under ~/.gemini/tmp/ and run `gemini --resume latest` from {cwd}")
+        _write_text(root, cwd)
+    # by id, not `latest`: Gemini 0.58 picks "latest" by the header's startTime, which is the source's
+    # original start, so an older session installed into an active project was not the one resumed
+    rep.notes.append(f"resume with: cd {cwd} && gemini --resume {sid}" if install else
+                     f"to try it: copy {base.name}/ under ~/.gemini/tmp/ and run `gemini --resume {sid}` from {cwd}")
     return p
 
 
-WRITERS = {"claude-code": write_claude, "codex": write_codex, "gemini-cli": write_gemini}
+def write_cline(s: Session, turns: list[Turn], out_dir: Path, template: Path | None, rep: FidelityReport,
+                install: bool, redact=None) -> Path:
+    """Cline CLI (3.0.x): `<store>/<id>/<id>.json` (metadata) + `<id>.messages.json`, plus one row in
+    the store's SQLite index `<data>/db/sessions.db` when installing, because `cline history` and
+    `cline --id` read the index, not the folders (learned by minting a session, 2026-09-18).
+
+    The store is `~/.cline/data/sessions`; the index sits beside it at `../db/sessions.db`. A
+    template is a real `<id>.json` of the CLI (the `.messages.json` next to it supplies the
+    envelope of the messages file, system prompt included). User text is wrapped in
+    `<user_input mode="act">`, as the CLI writes it; assistant blocks carry both `text` and
+    `thinking` keys with the unused one empty, as observed."""
+    home = _store("cline")
+    if install and (why := cline_index_problem(home)):
+        raise ValueError(f"not installed: {why}")
+    meta_t: dict = {}
+    msgs_t: dict = {}
+    if template:
+        tp = Path(template)
+        try:
+            meta_t = json.loads(tp.read_text(encoding="utf-8-sig"))
+            mp = tp.with_name(tp.stem + ".messages.json")
+            if mp.is_file():
+                msgs_t = json.loads(mp.read_text(encoding="utf-8-sig"))
+        except (OSError, ValueError) as e:
+            rep.notes.append(f"template {tp.name} could not be read ({e}); minimal envelope")
+        else:
+            rep.notes.append(f"envelope from template {tp.name}: cline "
+                             f"{((meta_t.get('metadata') or {}).get('sessionHistoryOrigin') or {}).get('version', '?')}, "
+                             f"provider {meta_t.get('provider')}, model {meta_t.get('model')}")
+    else:
+        rep.notes.append("no template: minimal envelope; pass --template <a real <id>.json of the Cline CLI> or --mint-template")
+    provider = meta_t.get("provider") or "cline"
+    model = meta_t.get("model") or "unknown"
+    cli_version = ((meta_t.get("metadata") or {}).get("sessionHistoryOrigin") or {}).get("version") or "unknown"
+    cwd = s.cwd or meta_t.get("cwd") or _no_cwd(rep)
+    system_prompt = str(msgs_t.get("system_prompt") or "")
+    team_name = str(meta_t.get("team_name") or "")
+    if redact:
+        # the template's prompt and team name are text from another session on this machine (the
+        # CLI's prompt names its working directory); redacted like cwd, so a --redact conversion
+        # carries no more of the template than of the source
+        cwd, system_prompt, team_name = redact(cwd), redact(system_prompt), redact(team_name)
+    now = datetime.now(timezone.utc)
+    start = turns[0].timestamp if turns and turns[0].timestamp else now
+    end = turns[-1].timestamp if turns and turns[-1].timestamp else start
+
+    def ms(ts):
+        return int((ts or start).timestamp() * 1000)
+    sid = cline_id(ms(start))
+    msgs: list[dict] = []
+    for i, t in enumerate(turns):
+        text = f'<user_input mode="act">{t.text}</user_input>' if t.role == "user" else t.text
+        m: dict = {"id": f"msg_ectype_{i:04d}", "role": t.role,
+                   "content": [{"type": "text", "text": text, "thinking": ""}], "ts": ms(t.timestamp)}
+        if t.role == "assistant":
+            m["modelInfo"] = {"id": model, "provider": provider}
+        msgs.append(m)
+    first_user = next((t.text for t in turns if t.role == "user" and not banner_is(t)), None)
+    title = (s.title or first_user or "imported session").splitlines()[0][:100]
+    prompt = (first_user or title).splitlines()[0][:500]
+    base = home if install else out_dir                       # mirror the store's home (…/sessions): <id>/<id>.json
+    d = base / sid
+    mpath = d / f"{sid}.messages.json"
+    zero = {"inputTokens": 0, "outputTokens": 0, "cacheReadTokens": 0, "cacheWriteTokens": 0, "totalCost": 0}
+    metadata = {"sessionHistoryOrigin": {"mode": "user", "version": cli_version}, "title": title,
+                "totalCost": 0, "aggregatedAgentsCost": 0, "usage": dict(zero), "aggregateUsage": dict(zero)}
+    meta = {"version": meta_t.get("version", 1), "session_id": sid, "source": "cli", "pid": os.getpid(),
+            "started_at": _iso(start), "ended_at": _iso(end), "exit_code": 0, "status": "completed",
+            "interactive": False, "provider": provider, "model": model, "cwd": cwd, "workspace_root": cwd,
+            "team_name": team_name, "enable_tools": bool(meta_t.get("enable_tools", True)),
+            "enable_spawn": bool(meta_t.get("enable_spawn", True)), "enable_teams": bool(meta_t.get("enable_teams", True)),
+            "prompt": prompt, "metadata": metadata,
+            # the real path only where Cline must follow it (an install); an export may be shared
+            "messages_path": redact(str(mpath)) if redact and not install else str(mpath)}
+    messages_doc = {"version": msgs_t.get("version", 1), "updated_at": _iso(end), "agent": msgs_t.get("agent", "lead"),
+                    "sessionId": sid, "origin": {"source": "cli", "mode": "user", "sessionId": sid, "version": cli_version},
+                    "system_prompt": system_prompt, "messages": msgs}
+    _write_text(mpath, json.dumps(messages_doc, ensure_ascii=False, indent=2))
+    p = d / f"{sid}.json"
+    _write_text(p, json.dumps(meta, ensure_ascii=False, indent=2))
+    if install:
+        cline_register(home, meta, rep)
+        rep.notes.append(f"resume with: cd {cwd} && cline --id {sid}   (interactive; headless needs a terminal, see agentcli)")
+    else:
+        rep.notes.append(f"to try it: copy {sid}/ under ~/.cline/data/sessions/ and let `ectype convert --install` add the index row, or add it by hand")
+    rep.new_id = sid
+    return p
+
+
+WRITERS = {"claude-code": write_claude, "codex": write_codex, "gemini-cli": write_gemini, "cline": write_cline}
