@@ -4,7 +4,7 @@ All notable changes to ectype are recorded here, newest first, in the shape of
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the version numbers follow
 [Semantic Versioning](https://semver.org/) while the program is pre-1.0.
 
-## [0.3.1] - 2026-09-25
+## [0.3.1] - 2026-09-28
 
 ### Added
 
